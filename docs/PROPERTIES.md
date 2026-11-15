@@ -12,19 +12,19 @@ arXiv:2510.09551 · **[M]** MIRAS ("It's All Connected"), arXiv:2504.13173 ·
 
 | # | property | source | test | status |
 |---|---|---|---|---|
-| 1 | One-shot store: from M=0 a write with theta = 0.5/‖k‖² makes `M k = v` exactly | [T] eq 10-13, [P] | `test_memory.py::test_one_shot_store` | guarded |
-| 2 | A write is a rank-1 (outer-product) update | [T] closed-form grad | `test_write_is_an_outer_product_update` | guarded |
-| 3 | Momentum (eta) and forgetting (alpha) each change the update | [T] Table 5 | `test_momentum_and_forget_change_the_update` | guarded |
-| 4 | Write→read is differentiable with a correct gradient | [T] §4 training | `test_write_then_read_gradcheck` (double, autograd gradcheck) | guarded |
-| 5 | State detach cuts the graph (bounded backward cost) | [T] chunking, [P] O(1) | `test_detach_cuts_the_graph`, `test_state_detached_at_chunk_boundary` | guarded |
-| 6 | Knob-free gates follow Law 5: alpha=1/L, eta=1-1/L, theta×(1-eta) | [B], [P] | `test_kernel_matched_gates_follow_law5` | guarded |
-| 7 | Retrieval-lag estimator tracks the true lag | [P] | `test_lag_estimate_tracks_true_lag` | guarded (needs q/k alignment) |
-| 8 | Memory is per batch element; shapes/finiteness over random B, L, d | — | `test_state_is_per_batch_element`, `test_shapes_and_finiteness` (hypothesis) | guarded |
-| 9 | Retrievals are context: chunk tokens see all retrievals, retrievals don't see the chunk | [T] §4.1 MAC | `test_mac_mask_structure` | guarded |
-| 10 | A chunk's writes do not leak into its own logits (retrieve-then-update) | [T] §4.1 | `test_memory_write_changes_later_logits_only` | guarded |
-| 11 | Attention alone solves in-context recall | control | `test_learns_in_context_recall` (integration) | **measured 1.0000 @400 steps** |
-| 12 | Attention alone CANNOT solve beyond-window recall (no leak in the task) | control, [P] | `test_no_memory_cannot_do_long_gap` (integration) | **measured 0.056 vs baseline 0.071** |
-| 13 | With memory, beyond-window recall is learned | [T] S-NIAH/BABILong, [R] "neural memory is the decisive factor" | `test_memory_learns_long_gap_recall` (integration) | **measured 0.90 (seed 0, 800 steps), 1.0000 (seed 1, 150 steps)** |
+| 1 | One-shot store: from M=0 a write with theta = 0.5/‖k‖² makes `M k = v` exactly | [T] eq 10-13, [P] | [`test_memory.py::test_one_shot_store`](../tests/test_memory.py) | guarded |
+| 2 | A write is a rank-1 (outer-product) update | [T] closed-form grad | [`test_write_is_an_outer_product_update`](../tests/test_memory.py) | guarded |
+| 3 | Momentum (eta) and forgetting (alpha) each change the update | [T] Table 5 | [`test_momentum_and_forget_change_the_update`](../tests/test_memory.py) | guarded |
+| 4 | Write→read is differentiable with a correct gradient | [T] §4 training | [`test_write_then_read_gradcheck`](../tests/test_memory.py) (double, autograd gradcheck) | guarded |
+| 5 | State detach cuts the graph (bounded backward cost) | [T] chunking, [P] O(1) | [`test_detach_cuts_the_graph`](../tests/test_memory.py), [`test_state_detached_at_chunk_boundary`](../tests/test_mac.py) | guarded |
+| 6 | Knob-free gates follow Law 5: alpha=1/L, eta=1-1/L, theta×(1-eta) | [B], [P] | [`test_kernel_matched_gates_follow_law5`](../tests/test_memory.py) | guarded |
+| 7 | Retrieval-lag estimator tracks the true lag | [P] | [`test_lag_estimate_tracks_true_lag`](../tests/test_memory.py) | guarded (needs q/k alignment) |
+| 8 | Memory is per batch element; shapes/finiteness over random B, L, d | — | [`test_state_is_per_batch_element`](../tests/test_memory.py), [`test_shapes_and_finiteness`](../tests/test_memory.py) (hypothesis) | guarded |
+| 9 | Retrievals are context: chunk tokens see all retrievals, retrievals don't see the chunk | [T] §4.1 MAC | [`test_mac_mask_structure`](../tests/test_mac.py) | guarded |
+| 10 | A chunk's writes do not leak into its own logits (retrieve-then-update) | [T] §4.1 | [`test_memory_write_changes_later_logits_only`](../tests/test_mac.py) | guarded |
+| 11 | Attention alone solves in-context recall | control | [`test_learns_in_context_recall`](../tests/test_mac.py) (integration) | **measured 1.0000 @400 steps** |
+| 12 | Attention alone CANNOT solve beyond-window recall (no leak in the task) | control, [P] | [`test_no_memory_cannot_do_long_gap`](../tests/test_mac.py) (integration) | **measured 0.056 vs baseline 0.071** |
+| 13 | With memory, beyond-window recall is learned | [T] S-NIAH/BABILong, [R] "neural memory is the decisive factor" | [`test_memory_learns_long_gap_recall`](../tests/test_mac.py) (integration) | **measured 0.90 (seed 0, 800 steps), 1.0000 (seed 1, 150 steps)** |
 | 14 | Writes keyed on the previous token store "key→value", not "token→itself" | [P] retention 0.139→0.803 | covered by #13's config (`write_key_from_prev=True`); needs its own ablation test | todo |
 | 15 | Gradient must reach the write side across the gap (tbptt span ≥ gap) or learning stalls ~0.2-0.3 | [P] frozen arm, this repo | covered by #13's config (`tbptt_chunks` ≥ episode); needs its own ablation test | todo |
 | 16 | Larger chunks help; chunking is what makes Titans lose to baselines | [R] | chunk-size sweep | todo |
