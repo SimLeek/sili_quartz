@@ -82,8 +82,13 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--local-only", action="store_true")
+    ap.add_argument("--remote-only", action="store_true")
     a = ap.parse_args()
-    batches = [b for b in DEFAULT if not (a.local_only and b.host != "local")]
+    batches = [
+        b
+        for b in DEFAULT
+        if not (a.local_only and b.host != "local") and not (a.remote_only and b.host == "local")
+    ]
     for b in batches:
         print(f"  {b.name:<14} {b.host:<16} gpu={b.gpu}  -k '{b.k}'")
     if a.dry_run:
