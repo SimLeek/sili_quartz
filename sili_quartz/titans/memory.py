@@ -1,22 +1,28 @@
-"""Titans neural long-term memory (arXiv:2501.00663 §3.1), matrix-valued, batched.
+"""Titans neural long-term memory (arXiv:2501.00663 §3.1), matrix-valued, batched,
+with the two ATLAS switches (arXiv:2505.23735) that address its measured limits.
 
     k_t = x_t W_K,  v_t = x_t W_V,  q_t = x_t W_Q                 (11, 14)
-    l(M; x_t)  = || M k_t - v_t ||^2                               (12)
-    S_t = eta_t S_{t-1} - theta_t grad_M l(M_{t-1}; x_t)           (10)
+    l(M; x_t)  = || M phi(k_t) - v_t ||^2                          (12)
+    S_t = eta_t S_{t-1} - theta_t grad_M l                         (10)
     M_t = (1 - alpha_t) M_{t-1} + S_t                              (13)
-    y_t = M* q_t                                                   (15)
+    y_t = M phi(q_t)                                               (15)
 
-For a matrix memory the inner gradient is closed form, 2 (M k - v) k^T, so a
-write is an outer-product update inside the forward pass. theta defaults to
-0.5 / ||k||^2, the normalized delta rule, which stores one pair exactly in one
-shot from M = 0 (test_memory.py::test_one_shot_store).
+`features`: "identity" is Titans. "poly2" maps keys to [k ; upper(k k^T)],
+raising the number of independently storable keys from O(d) to O(d^2)
+(ATLAS Prop. 1; measured here: a plain matrix saturates at ~d/4 bindings).
 
-Gates: "const" uses the given alpha/eta. "kernel_matched" has no free knob:
-with b = eta the retention kernel is (n+1) b^n (Law 5 in
-sili__new/bend_proofs/titans_gate_retention_kernel), peaking at ~1/(1-b);
-matching that peak to the measured retrieval lag L gives
-alpha = 1/L, eta = 1 - 1/L, and theta scaled by (1 - eta) so eta does not
-also change the effective step size.
+`window`: tokens per inner step. 1 is Titans' online rule. c > 1 is the Omega
+rule: one step on the joint loss of the last c pairs, so the memory fits the
+context rather than each token in turn. The step is normalized per key
+(sum_i gamma_i (M phi_i - v_i) phi_i^T / ||phi_i||^2, theta = 0.5), which
+stores a window of orthogonal keys exactly in one step and reduces to the
+0.5/||k||^2 delta rule at c = 1. `inner_steps` iterates toward the
+least-squares solution for correlated keys.
+
+`gates`: "const" uses alpha/eta as given. "kernel_matched" has no free knob:
+alpha = 1/L, eta = 1 - 1/L, theta scaled by (1 - eta), from the retention
+kernel's Law 5 (sili__new/bend_proofs/titans_gate_retention_kernel) and the
+measured retrieval lag L.
 """
 
 from __future__ import annotations
@@ -29,11 +35,11 @@ from torch import Tensor, nn
 
 @dataclass
 class MemoryState:
-    M: Tensor  # [B, d, d]
-    S: Tensor  # [B, d, d] momentum / surprise trace
+    M: Tensor  # [B, d_mem, d_feat]
+    S: Tensor  # [B, d_mem, d_feat] momentum / surprise trace
     lag: Tensor | None = None  # [B] EMA of retrieval lag (kernel_matched only)
-    keys: Tensor | None = None  # [B, K, d] recent write keys, for lag estimation
-    ticks: Tensor | None = None  # [B, K] write tick of each buffered key
+    keys: Tensor | None = None  # [B, K, d_mem] recent raw write keys, for lag estimation
+    ticks: Tensor | None = None  # [B, K]
     tick: int = 0
 
     def detach(self) -> MemoryState:
@@ -47,6 +53,13 @@ class MemoryState:
         )
 
 
+def poly2(k: Tensor) -> Tensor:
+    """[..., d] -> [..., d + d(d+1)/2]: k followed by the upper triangle of k k^T."""
+    d = k.shape[-1]
+    i, j = torch.triu_indices(d, d, device=k.device)
+    return torch.cat([k, k[..., i] * k[..., j]], dim=-1)
+
+
 class TitansMemory(nn.Module):
     def __init__(
         self,
@@ -57,6 +70,10 @@ class TitansMemory(nn.Module):
         eta: float = 0.0,
         theta_scale: float = 1.0,
         gates: str = "const",
+        features: str = "identity",
+        window: int = 1,
+        inner_steps: int = 1,
+        window_decay: float = 1.0,
         lag_beta: float = 0.02,
         lag_buffer: int = 64,
         eps: float = 1e-6,
@@ -64,21 +81,30 @@ class TitansMemory(nn.Module):
         super().__init__()
         if gates not in ("const", "kernel_matched"):
             raise ValueError(f"gates must be 'const' or 'kernel_matched', got {gates!r}")
+        if features not in ("identity", "poly2"):
+            raise ValueError(f"features must be 'identity' or 'poly2', got {features!r}")
+        if window < 1 or inner_steps < 1:
+            raise ValueError("window and inner_steps must be >= 1")
         d_mem = d_mem or d_in
         self.d_in, self.d_mem = d_in, d_mem
+        self.d_feat = d_mem if features == "identity" else d_mem + d_mem * (d_mem + 1) // 2
         self.alpha, self.eta, self.theta_scale = alpha, eta, theta_scale
-        self.gates, self.lag_beta, self.lag_buffer, self.eps = gates, lag_beta, lag_buffer, eps
+        self.gates, self.features = gates, features
+        self.window, self.inner_steps, self.window_decay = window, inner_steps, window_decay
+        self.lag_beta, self.lag_buffer, self.eps = lag_beta, lag_buffer, eps
         self.W_K = nn.Linear(d_in, d_mem, bias=False)
         self.W_V = nn.Linear(d_in, d_mem, bias=False)
         self.W_Q = nn.Linear(d_in, d_mem, bias=False)
 
+    def phi(self, k: Tensor) -> Tensor:
+        return k if self.features == "identity" else poly2(k)
+
     def init_state(self, batch: int, device=None, dtype=None) -> MemoryState:
-        d = self.d_mem
-        z = torch.zeros(batch, d, d, device=device, dtype=dtype)
+        z = torch.zeros(batch, self.d_mem, self.d_feat, device=device, dtype=dtype)
         st = MemoryState(z, z.clone())
         if self.gates == "kernel_matched":
             st.lag = torch.ones(batch, device=device, dtype=dtype)
-            st.keys = torch.zeros(batch, self.lag_buffer, d, device=device, dtype=dtype)
+            st.keys = torch.zeros(batch, self.lag_buffer, self.d_mem, device=device, dtype=dtype)
             st.ticks = torch.full((batch, self.lag_buffer), -(10**9), device=device, dtype=torch.long)
         return st
 
@@ -91,11 +117,11 @@ class TitansMemory(nn.Module):
         return 1.0 / lag, eta, self.theta_scale * (1.0 - eta)
 
     def read(self, x: Tensor, state: MemoryState) -> Tensor:
-        """y = M q for x of shape [B, ..., d_in]; eq 15. Updates the lag estimate."""
+        """y = M phi(q) for x of shape [B, ..., d_in]; eq 15. Updates the lag estimate."""
         q = self.W_Q(x)
         if self.gates == "kernel_matched":
             self._note_read(q, state)
-        return torch.einsum("bij,b...j->b...i", state.M, q)
+        return torch.einsum("bij,b...j->b...i", state.M, self.phi(q))
 
     @torch.no_grad()
     def _note_read(self, q: Tensor, state: MemoryState) -> None:
@@ -104,39 +130,48 @@ class TitansMemory(nn.Module):
         # Needs W_Q ~ W_K alignment, which retrieval itself requires; until the
         # model learns it, no key matches and the lag stays at its default 1,
         # i.e. a plain delta rule (alpha=1, eta=0).
-        qf = q.reshape(q.shape[0], -1, q.shape[-1])  # [B, L, d]
+        qf = q.reshape(q.shape[0], -1, q.shape[-1])
         qn = qf / qf.norm(dim=-1, keepdim=True).clamp_min(1e-8)
         kn = state.keys / state.keys.norm(dim=-1, keepdim=True).clamp_min(1e-8)
-        sims = torch.einsum("bld,bkd->blk", qn, kn)
-        best, idx = sims.max(dim=-1)  # [B, L]
+        best, idx = torch.einsum("bld,bkd->blk", qn, kn).max(dim=-1)
         lag = (state.tick - torch.gather(state.ticks, 1, idx)).to(q.dtype)
         valid = best > 0.5
-        n = valid.sum(dim=1).clamp_min(1)
-        mean_lag = (lag * valid).sum(dim=1) / n
-        has = valid.any(dim=1)
-        state.lag = torch.where(has, state.lag + self.lag_beta * (mean_lag - state.lag), state.lag)
+        mean_lag = (lag * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1)
+        state.lag = torch.where(
+            valid.any(dim=1), state.lag + self.lag_beta * (mean_lag - state.lag), state.lag
+        )
 
     def write(self, x: Tensor, state: MemoryState, k_src: Tensor | None = None) -> MemoryState:
-        """Sequential inner-loop steps (eqs 10-13) over the L tokens of x [B, L, d_in].
+        """Inner-loop steps over x [B, L, d_in], `window` tokens per step (eqs 10-13).
 
         k_src lets the key come from a different representation than the value
         (same shape as x); default is x itself, as in eq 11.
         """
-        k_all = self.W_K(x if k_src is None else k_src)
-        v_all = self.W_V(x)
+        k_raw = self.W_K(x if k_src is None else k_src)
+        K, V = self.phi(k_raw), self.W_V(x)  # [B, L, d_feat], [B, L, d_mem]
         M, S = state.M, state.S
         alpha, eta, th_mul = self._gates(state)
-        for t in range(x.shape[1]):
-            k, v = k_all[:, t], v_all[:, t]  # [B, d]
-            err = torch.einsum("bij,bj->bi", M, k) - v
-            grad = 2.0 * err.unsqueeze(-1) * k.unsqueeze(-2)  # [B, d, d]
-            theta = 0.5 / (k.pow(2).sum(-1) + self.eps)
-            theta = theta.view(-1, 1, 1) * th_mul
-            S = eta * S - theta * grad
-            M = (1.0 - alpha) * M + S
-        out = MemoryState(M, S, state.lag, state.keys, state.ticks, state.tick + x.shape[1])
+        L, c = x.shape[1], self.window
+        for s in range(0, L, c):
+            Kw, Vw = K[:, s : s + c], V[:, s : s + c]
+            n = Kw.shape[1]
+            gamma = self.window_decay ** torch.arange(n - 1, -1, -1, device=x.device, dtype=x.dtype)
+            w = (gamma / (Kw.pow(2).sum(-1) + self.eps)).unsqueeze(-1)  # [B, n, 1] per-key normalizer
+            # Step = 1 / lambda_max of the normalized Gram matrix: exactly 1 for
+            # orthogonal keys (one-shot store), <= 1/n for fully correlated ones
+            # (no overshoot along shared directions). Differentiable, so the outer
+            # loop sees how the projections change the step.
+            Kn = Kw * w.sqrt()
+            lam = torch.linalg.matrix_norm(Kn @ Kn.transpose(1, 2), ord=2).clamp_min(1e-6)
+            step = (th_mul / lam).view(-1, 1, 1) if torch.is_tensor(th_mul) else th_mul / lam.view(-1, 1, 1)
+            for _ in range(self.inner_steps):
+                err = torch.einsum("bij,bnj->bni", M, Kw) - Vw  # [B, n, d_mem]
+                grad = torch.einsum("bni,bnj->bij", err * w, Kw)  # sum_i w_i err_i phi_i^T
+                S = eta * S - step * grad
+                M = (1.0 - alpha) * M + S
+        out = MemoryState(M, S, state.lag, state.keys, state.ticks, state.tick + L)
         if self.gates == "kernel_matched":
-            self._buffer_keys(k_all.detach(), state, out)
+            self._buffer_keys(k_raw.detach(), state, out)
         return out
 
     @torch.no_grad()
