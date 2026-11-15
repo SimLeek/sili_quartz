@@ -11,7 +11,12 @@
   C half now (train once, evaluate longer streams / more pairs, no retrain).
 - Prediction to falsify: C falls off at O(d_k) bindings; B at m×d; A at cache length.
 
-## 2. Omega window + polynomial keys in `TitansMemory` (first two ATLAS switches)
+## 2. ATLAS switches — DONE for poly2 + omega; next: find poly2's ceiling
+- Both landed (377db7e) with the capability matrix green on 3 GPUs. poly2
+  saturated the 32-binding probe; omega alone gave 1.5×. Raise the probe:
+  `capacity_sweep.py --features poly2` with N_KEYS=128 and pairs up to 128,
+  on the P40 (large-batch job). Then `both`, then Muon / alt losses.
+- Old notes:
 - `window=c` (c=chunk): one weighted gradient over the chunk's (k,v) pairs
   instead of the per-token loop — memorizes context, and removes the scan.
 - `features="poly_p"`. Re-derive ledger row 1 as "window stored exactly when

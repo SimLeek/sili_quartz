@@ -33,7 +33,7 @@ spanning the gap). Without either, accuracy stalls around 0.2–0.3.
 all 8 integration tests pass — every switch combination (`base`, `poly`,
 `omega`, `both`) still learns beyond-window recall; `poly2` recovers more
 bindings than the plain matrix at equal d (the new capability); `omega`
-costs none. Laptop 1660 Ti 138 s, RTX 2060 203 s, Tesla P40 740 s (the
+costs none. Magnitudes at d=64, 32 live bindings: base recovers 18–19, **omega 28.3**, **poly2 32/32 (probe saturated)**. Laptop 1660 Ti 138 s, RTX 2060 203 s, Tesla P40 740 s (the
 P40 is launch-latency-bound on tiny steps; give it the big-batch jobs).
 
 ## Layout
