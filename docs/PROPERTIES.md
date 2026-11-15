@@ -29,14 +29,20 @@ arXiv:2510.09551 · **[M]** MIRAS ("It's All Connected"), arXiv:2504.13173 ·
 | 15 | Gradient must reach the write side across the gap (tbptt span ≥ gap) or learning stalls ~0.2-0.3 | [P] frozen arm, this repo | covered by #13's config (`tbptt_chunks` ≥ episode); needs its own ablation test | todo |
 | 16 | Larger chunks help; chunking is what makes Titans lose to baselines | [R] | chunk-size sweep | todo |
 | 17 | Persistent (learned, input-independent) tokens: negligible or negative alone | [R] ablation | not implemented; add only with a test showing a gain | todo |
-| 18 | Memory updates alone give no meaningful test-time learning after convergence (slow decay past 50 epochs) | [R] | long-stream drift test | todo |
-| 19 | Matrix memory holds only O(d_k) linearly independent keys | [A] Prop. 1 | capacity sweep: n_pairs vs d, expect a cliff | todo |
+| 18 | Memory updates alone give no meaningful test-time learning after convergence (slow decay past 50 epochs) | [R] | `examples/capacity_sweep.py` (gap axis) | **measured: mild, log-linear in gap and NOT intrinsic** — well-trained seed loses 0.1–0.9 pt per gap doubling (n=2…16), under-trained seed 3–4 pt. Decay = how well BLANK writes were learned to be null (err→0), i.e. a training-quality effect |
+| 19 | Matrix memory holds only O(d_k) linearly independent keys | [A] Prop. 1 | `examples/capacity_sweep.py` (bindings axis) | **measured: recovered bindings saturate at C≈16 ≈ d_k/4** (d_k=64; acc·n = 2, 4, 7.6, 12.3, 15, 16). Tail fits acc ≈ C/n (32→0.469, 64→0.250). Under-trained seed saturates at 3.5: C is set by learned key alignment, d_k/4 is the ceiling seen |
 | 20 | Single-token online updates memorize tokens, not context; a sliding-window objective (Omega rule) fixes it | [A] | compare per-token vs window write on recall with distractors | todo (research) |
 | 21 | First-order updates converge to spurious minima; second-order (Muon-style) helps | [A] | — | out of scope for now |
 | 22 | L2 attentional bias is one choice among several (ℓp, Huber); retention gate is a regularizer choice (L2, KL, elastic) | [M] | the loss and gate should be swappable; test that swapping preserves #1-#5 | todo |
 | 23 | Momentum is what lets deeper (MLP) memories train | [M] | MLP memory + eta sweep | todo (MLP memory not yet in this repo) |
 | 24 | Gates must not be left at random init: alpha≈0.5 halves memory each step → below chance | [P] | init test: default gates are not random | todo |
 | 25 | Solve RATE across seeds, not a single seed: phase transition timing varies (seed 0: step ~560; seed 1: <150) | [P] reliability, this repo | multi-seed run, report rate | **4/4 seeds > baseline+0.8; 2/4 at 1.0000 by step 150, 2/4 at 0.87-0.90 by 800-1500 (transition timing varies 10x)** |
+
+**Approximate law from the sweep (matrix memory, d_k=64, no forgetting):**
+`acc(n, g) ≈ min(1, C_eff/n) − β·n·log2(g/16)` with `C_eff ≤ ~d_k/4 ≈ 16`
+set by how orthogonal the learned keys are, and `β ≈ 1e-3` per binding per
+gap-doubling for a well-trained model (≈ 1e-2 under-trained). Capacity is
+intrinsic; gap decay is not.
 
 Reading the ledger: every "guarded" row is a fast unit test. "measured"
 rows are integration tests (`pytest -m integration`). "todo" rows are

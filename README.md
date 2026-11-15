@@ -17,6 +17,13 @@ that keep them working.
 Beyond-window means every (key, value) pair sits ≥ 16 tokens before its
 query with an 8-token attention chunk, so only the memory can answer.
 
+**Capacity, measured** (`examples/capacity_sweep.py`, train once at 4 pairs,
+evaluate without retraining): recovered bindings saturate at **≈16 ≈ d_k/4**
+for d_k=64 (acc ≈ 16/n beyond that: 32 pairs → 0.47, 64 → 0.25). Decay with
+gap is mild — under 1 point per gap doubling out to 1024 tokens — and is a
+training-quality effect, not intrinsic. That is ATLAS's O(d_k) cliff seen
+directly, and the reason polynomial key features are next.
+
 Two settings were necessary and are the defaults: writes keyed on the
 *previous* token's representation (so a pair is stored as key→value), and
 backprop through the memory across the whole episode (`tbptt_chunks`
