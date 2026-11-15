@@ -18,9 +18,11 @@
   keys are independent" BEFORE switching; that test doubles as the capacity probe.
 
 ## 3. Training-regime constraints (user, 2026-11-15)
-- Outer-loop (sparse backprop) consolidation is limited to a **"sleep" window:
-  ≤ 8 h/day, once a day** — operational sanity while it plays games; design the
-  schedule, don't assume always-on training.
+- **Sleep window (≤ 8 h/day, once a day) = annealing + health passes that
+  improve the optimizer state.** Sparse backprop runs during BOTH wake and
+  sleep. fp4-fix is a separate, later thing (only once we are at fp4). So the
+  memory tier does not have to hold a whole day alone — weights learn all day;
+  what sleep adds is the optimizer-state repair. Design the schedule around that.
 - Sparse amortized learning with health/annealing may run far below max
   learning speed: closer to inference in some phases, to training in others.
   Memory-family results must be re-checked under THAT rate, not Adam's.

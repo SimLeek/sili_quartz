@@ -15,12 +15,15 @@ from sili_quartz.titans.mac import recall_loss
 
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
 CHUNK, TRAIN_PAIRS, TRAIN_GAP, STEPS = 8, 4, 16, 1500
+N_KEYS = N_VALUES = 64  # fixed above the largest binding count, so vocab never changes
 
 
 def train(seed: int) -> TitansMAC:
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
-    spec = RecallSpec(n_pairs=TRAIN_PAIRS, n_queries=TRAIN_PAIRS, gap=TRAIN_GAP)
+    spec = RecallSpec(
+        n_keys=N_KEYS, n_values=N_VALUES, n_pairs=TRAIN_PAIRS, n_queries=TRAIN_PAIRS, gap=TRAIN_GAP
+    )
     m = TitansMAC(
         vocab=spec.vocab, d=64, n_heads=4, chunk=CHUNK, write_key_from_prev=True, tbptt_chunks=64
     ).to(DEV)
@@ -38,7 +41,7 @@ def train(seed: int) -> TitansMAC:
 
 @torch.no_grad()
 def evaluate(m: TitansMAC, pairs: int, gap: int) -> tuple[float, float]:
-    spec = RecallSpec(n_pairs=pairs, n_queries=min(pairs, 8), gap=gap)
+    spec = RecallSpec(n_keys=N_KEYS, n_values=N_VALUES, n_pairs=pairs, n_queries=min(pairs, 8), gap=gap)
     t, y = make_batch(spec, 256, np.random.default_rng(999))
     logits, _ = m(t.to(DEV))
     return accuracy(logits, y.to(DEV)), constant_predictor_baseline(y)
