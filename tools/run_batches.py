@@ -67,14 +67,18 @@ def sync_remote() -> None:
     subprocess.run(ssh(f"{REMOTE_PY} -m pip install -q -e ~/sili_quartz[dev] 2>&1 | tail -1"), check=True)
 
 
-def launch(b: Batch, log_dir: Path) -> tuple[Batch, subprocess.Popen]:
+def launch(b: Batch, log_dir: Path, max_temp: int) -> tuple[Batch, subprocess.Popen]:
     env = f"CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES={b.gpu} SQ_DEVICE=cuda"
     pytest = f'-m pytest -q -m integration -k "{b.k}" -p no:cacheprovider'
+    # Every batch runs under the temperature kill-switch. The P40's blower is
+    # invisible to the driver, so this is the only thing between a long batch
+    # and firmware slowdown at 92C.
+    guard = f"tools/gpu_guard.sh --gpu {b.gpu} --max-temp {max_temp} --poll 10 --"
     log = (log_dir / f"{b.name}.log").open("w")
     if b.host == "local":
-        cmd = ["bash", "-c", f"cd {ROOT} && {env} {LOCAL_PY} {pytest}"]
+        cmd = ["bash", "-c", f"cd {ROOT} && {env} {guard} {LOCAL_PY} {pytest}"]
     else:
-        cmd = ssh(f"cd ~/sili_quartz && {env} {REMOTE_PY} {pytest}")
+        cmd = ssh(f"cd ~/sili_quartz && {env} {guard} {REMOTE_PY} {pytest}")
     return b, subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
 
 
@@ -83,6 +87,7 @@ def main() -> None:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--local-only", action="store_true")
     ap.add_argument("--remote-only", action="store_true")
+    ap.add_argument("--max-temp", type=int, default=80, help="abort a batch if its GPU reaches this (C)")
     a = ap.parse_args()
     batches = [
         b
@@ -97,7 +102,7 @@ def main() -> None:
         sync_remote()
     log_dir = ROOT / "runs" / "batches" / time.strftime("%Y%m%d-%H%M%S")
     log_dir.mkdir(parents=True)
-    procs = [launch(b, log_dir) for b in batches]
+    procs = [launch(b, log_dir, a.max_temp) for b in batches]
     t0 = time.time()
     for b, p in procs:
         rc = p.wait()
