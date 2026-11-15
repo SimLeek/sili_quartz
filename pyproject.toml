@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sili_quartz"
+version = "0.1.0"
+description = "Working models and examples for sili: Titans memory-as-context, first in PyTorch, then kernel by kernel on sili."
+requires-python = ">=3.11"
+dependencies = ["torch>=2.6", "numpy>=1.26"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "hypothesis>=6", "ruff>=0.6"]
+
+[tool.setuptools.packages.find]
+include = ["sili_quartz*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not integration'"
+markers = [
+  "integration: trains for real (seconds to minutes); run explicitly with -m integration",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
