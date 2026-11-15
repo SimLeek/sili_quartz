@@ -81,9 +81,9 @@ def _evaluate(model, spec, n=256):
 # Every switch combination must keep the old capability (beyond-window recall).
 SWITCHES = {
     "base": {},
-    "poly2": {"features": "poly2"},
+    "poly": {"features": "poly2"},
     "omega": {"window": 8},
-    "poly2_omega": {"features": "poly2", "window": 8},
+    "both": {"features": "poly2", "window": 8},
 }
 
 
@@ -152,7 +152,7 @@ def _capacity(name, train_pairs=8, eval_pairs=32, steps=1500, seed=0):
 def test_poly2_raises_capacity():
     """New capability: poly2 recovers more bindings than the base matrix at the same d."""
     base_train, base_rec = _capacity("base")
-    poly_train, poly_rec = _capacity("poly2")
+    poly_train, poly_rec = _capacity("poly")
     assert base_train > 0.8 and poly_train > 0.8, (base_train, poly_train)
     assert poly_rec > base_rec + 4, (base_rec, poly_rec)
 

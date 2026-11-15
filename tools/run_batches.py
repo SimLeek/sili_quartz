@@ -36,8 +36,8 @@ class Batch:
 
 DEFAULT = [
     Batch("laptop-1660ti", "local", 0, "long_gap_recall and (base or omega) or in_context or no_memory"),
-    Batch("remote-p40", REMOTE, 0, "poly2 and not omega_keeps"),
-    Batch("remote-2060", REMOTE, 1, "omega_keeps or (long_gap_recall and poly2_omega)"),
+    Batch("remote-p40", REMOTE, 0, "poly and not omega_keeps"),
+    Batch("remote-2060", REMOTE, 1, "omega_keeps or (long_gap_recall and both)"),
 ]
 
 
