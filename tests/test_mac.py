@@ -145,6 +145,7 @@ def _capacity(name, train_pairs=8, eval_pairs=32, steps=1500, seed=0):
     acc_eval, _ = _evaluate(
         model, RecallSpec(n_keys=64, n_values=64, n_pairs=eval_pairs, n_queries=8, gap=16)
     )
+    print(f"[capacity] {name}: train_acc={acc_train:.3f}  recovered@{eval_pairs}={acc_eval * eval_pairs:.1f}")
     return acc_train, acc_eval * eval_pairs
 
 
