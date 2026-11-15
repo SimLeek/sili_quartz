@@ -29,6 +29,13 @@ Two settings were necessary and are the defaults: writes keyed on the
 backprop through the memory across the whole episode (`tbptt_chunks`
 spanning the gap). Without either, accuracy stalls around 0.2–0.3.
 
+**Capability matrix, 3 GPUs in parallel** (`tools/run_batches.py`, 2026-11-15):
+all 8 integration tests pass — every switch combination (`base`, `poly`,
+`omega`, `both`) still learns beyond-window recall; `poly2` recovers more
+bindings than the plain matrix at equal d (the new capability); `omega`
+costs none. Laptop 1660 Ti 138 s, RTX 2060 203 s, Tesla P40 740 s (the
+P40 is launch-latency-bound on tiny steps; give it the big-batch jobs).
+
 ## Layout
 
 ```
