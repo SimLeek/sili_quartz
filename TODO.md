@@ -1,4 +1,19 @@
-# TODO (next session: 2026-11-16 15:00)
+# TODO
+
+## 0. Working agreements
+- `main` is branch-protected: work on branches, open PRs, the user merges.
+- Planned layout — every model family and every implementation of it lives
+  side by side in ONE directory, so a reviewer sees the torch and sili versions
+  of the same thing next to each other:
+
+      sili_quartz/models/
+        transformer.py        base (chunked attention)            torch
+        rmt.py                B: passed state tokens              torch
+        titans.py             C: memory as weights (+ switches)   torch
+        combined.py           B + C (ARMT-style)                  torch
+        *_sili.py             same models on sili kernels, same tests
+      sili_quartz/titans/     (current location; migrates into models/ when rmt lands)
+
 
 ## 1. Memory-family tests: B, C, B+C, and why A fails them (integration, overnight)
 - C exists (`TitansMAC`, memory=True). Add **B**: RMT-style register of m
@@ -22,6 +37,25 @@
 - `features="poly_p"`. Re-derive ledger row 1 as "window stored exactly when
   keys are independent" BEFORE switching; that test doubles as the capacity probe.
 
+## 2b. Two planned changes are TRADEOFFS, not wins — test them as such
+Each gets a two-axis measurement (what it should improve, what it should
+cost) rather than a pass/fail "better". Record both numbers in the ledger.
+
+- **e-BPTT via blame buffer(s).** A buffer receives ~2% of forward activity
+  continually and is backpropagated to once (or several such buffers at
+  different rates). Expected: better long-term recall (credit reaches writes
+  beyond the BPTT window) at the cost of SLOWER learning for anything inside
+  the BPTT window. Test: long-gap accuracy vs steps AND in-window accuracy vs
+  steps, side by side with full in-episode BPTT; the cost is the right-shift of
+  the in-window curve.
+- **Adam → sili importance (single-state optimizer).** Expected: worse
+  accuracy/steps until the mean/variance control and eigenvalue stochastic
+  annealing land (those may recover it). The benefit that is certain is RAM:
+  ~2/3 of the full model's footprint for the same model, because sili keeps no
+  backprop state. Test: same curves as above plus peak memory per parameter;
+  a regression in steps-to-threshold is EXPECTED and must be quantified, not
+  hidden. Adam remains the diagnostic reference.
+
 ## 3. Training-regime constraints (user, 2026-11-15)
 - **Sleep window (≤ 8 h/day, once a day) = annealing + health passes that
   improve the optimizer state.** Sparse backprop runs during BOTH wake and
@@ -38,3 +72,9 @@
 - PROPERTIES.md rows 14/15 ablation tests; row 24 (gates not random at init).
 - Then: peridot-style (sili Tensor) port, then CUDA kernels one at a time,
   each passing the same tests. Adam is the known non-exact exception.
+
+## 5. Compute
+- 3 GPUs online (laptop 1660 Ti; arch-sandbox P40 + 2060), `tools/run_batches.py`.
+- 2 more GPUs are available via a LAN box + another computer, more after that.
+  Not needed yet. If we do scale out, **track watts per job** alongside
+  wall-clock in the batch logs, from the start.
