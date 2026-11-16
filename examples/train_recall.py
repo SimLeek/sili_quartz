@@ -42,6 +42,15 @@ def main() -> None:
     p.add_argument(
         "--gap-curriculum", default="", help="comma list of gaps to train through in order, e.g. 0,8,16"
     )
+    p.add_argument("--keys", type=int, default=16)
+    p.add_argument("--values", type=int, default=16)
+    p.add_argument(
+        "--minutes", type=float, default=0, help="stop after this wall-clock budget (0 = use --steps)"
+    )
+    p.add_argument("--eval-every", type=int, default=0, help="eval interval in steps (0 = 10 evals total)")
+    p.add_argument("--stress-pairs", type=int, default=0, help="also eval at this many pairs (0 = off)")
+    p.add_argument("--stress-gap", type=int, default=0)
+    p.add_argument("--log", default="", help="CSV path for eval rows")
     p.add_argument("--no-key-from-prev", action="store_true", help="key writes on the same token (weaker)")
     p.add_argument("--tbptt", type=int, default=64, help="chunks between memory-state detaches")
     p.add_argument("--seed", type=int, default=0)
@@ -50,7 +59,7 @@ def main() -> None:
 
     torch.manual_seed(a.seed)
     rng = np.random.default_rng(a.seed)
-    spec = RecallSpec(n_pairs=a.pairs, n_queries=a.pairs, gap=a.gap)
+    spec = RecallSpec(n_keys=a.keys, n_values=a.values, n_pairs=a.pairs, n_queries=a.pairs, gap=a.gap)
     if a.gap > 0:
         assert_gap_hides_pairs(spec, a.chunk)
     kw = dict(vocab=spec.vocab, d=a.d, n_heads=4, chunk=a.chunk)
@@ -75,31 +84,66 @@ def main() -> None:
         f"params={sum(q.numel() for q in model.parameters())} baseline={base:.4f}",
     )
 
+    stress = None
+    if a.stress_pairs:
+        sp = RecallSpec(
+            n_keys=a.keys,
+            n_values=a.values,
+            n_pairs=a.stress_pairs,
+            n_queries=min(a.stress_pairs, 8),
+            gap=a.stress_gap or a.gap,
+        )
+        st_toks, st_tgts = make_batch(sp, 512, np.random.default_rng(54321))
+        stress = (st_toks.to(a.device), st_tgts.to(a.device), a.stress_pairs)
+    if a.log:
+        with open(a.log, "a") as fh:
+            fh.write("step,minutes,loss,acc,distinct,stress_acc,stress_recovered\n")
+    if a.minutes:
+        a.steps = 10**9
+    eval_every = a.eval_every or max(1, a.steps // 10)
     t0 = time.time()
     stages = [int(g) for g in a.gap_curriculum.split(",") if g != ""] or [a.gap]
     per_stage = max(1, a.steps // len(stages))
     for step in range(1, a.steps + 1):
         stage_gap = stages[min((step - 1) // per_stage, len(stages) - 1)]
-        toks, tgts = make_batch(RecallSpec(n_pairs=a.pairs, n_queries=a.pairs, gap=stage_gap), a.batch, rng)
+        toks, tgts = make_batch(
+            RecallSpec(n_keys=a.keys, n_values=a.values, n_pairs=a.pairs, n_queries=a.pairs, gap=stage_gap),
+            a.batch,
+            rng,
+        )
         logits, _ = model(toks.to(a.device))
         loss = recall_loss(logits, tgts.to(a.device))
         opt.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
-        if step % max(1, a.steps // 10) == 0 or step == 1:
+        done = a.minutes and (time.time() - t0) / 60 >= a.minutes
+        if step % eval_every == 0 or step == 1 or done:
             model.eval()
             with torch.no_grad():
                 ev_logits, _ = model(ev_toks)
+                s_acc = s_rec = float("nan")
+                if stress is not None:
+                    s_logits, _ = model(stress[0])
+                    s_acc = accuracy(s_logits, stress[1])
+                    s_rec = s_acc * stress[2]
             model.train()
             acc = accuracy(ev_logits, ev_tgts)
             k = distinct_predictions(ev_logits, ev_tgts)
             flag = "  <-- COLLAPSED" if k <= 2 else ""
+            if stress is not None:
+                flag = f"  stress acc {s_acc:.4f} rec {s_rec:.1f}" + flag
+            if a.log:
+                with open(a.log, "a") as fh:
+                    mins = (time.time() - t0) / 60
+                    fh.write(f"{step},{mins:.2f},{loss.item():.4f},{acc:.4f},{k},{s_acc:.4f},{s_rec:.2f}\n")
             print(
                 f"step {step:5d}  loss {loss.item():.4f}  acc {acc:.4f}  (+{acc - base:+.4f} vs base)  "
                 f"distinct {k}  {time.time() - t0:6.1f}s{flag}",
                 flush=True,
             )
+            if done:
+                break
 
 
 if __name__ == "__main__":
