@@ -41,10 +41,10 @@ P40 is launch-latency-bound on tiny steps; give it the big-batch jobs).
 key→value — 4 runs, m=4/16, ± curriculum); **titans 19.4**; **combined 23.7**. Details and
 sources in `docs/PROPERTIES.md` rows 26–29.
 
-**Long runs (230 min each, 3 GPUs, step-matched):** on the 32-binding stress probe,
-**combined (B+C) leads titans (C)** from ~2k steps — 40k steps: **31.3 vs 28.7** of 32 — and is
-more stable, at the cost of a slower first ~1k steps. The probe saturates near 32, so the
-gap is compressed; a harder probe is next. RMT alone collapsed. Row 30 in `docs/PROPERTIES.md`.
+**Long runs (equal 40k steps, 64-binding probe):** titans and combined recover
+55.4 ± 3.1 vs 56.4 ± 1.5 of 64 over the last 10k steps — equal within one seed, with
+combined about twice as stable. **poly2 + omega fails to train at this scale** (0.74
+train acc at 40k). RMT alone collapses. `docs/results/` has the tables.
 
 ## Layout
 

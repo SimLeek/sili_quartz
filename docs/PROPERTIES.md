@@ -67,9 +67,10 @@ it is the reason the sili substrate (memory as weights) is the bet. Open: does
 B bind with more depth, a cross-attention write head, or m·d ≫ bindings? Not
 pursued now; C and B+C are the path.
 
-| 30 | B+C vs C under long training (230 min, step-matched; 32-pair / gap-64 stress probe) | `examples/train_recall.py --minutes 230 --stress-pairs 32` logs in `runs/long/` | **combined leads from ~2k steps: 7.5k 30.3 vs 27.2, 20k 30.6 vs 28.8, 40k 31.3 vs 28.7 of 32; reaches stress≥0.9 at 5.5k vs 7k steps; more stable (titans oscillates 0.83–0.96). Cost: slower first 1k steps (6.7 vs 21.6). Probe is saturating near 32, so the gap is compressed — a 64-pair / 128-key probe is needed before claiming it grows. RMT alone at this spec collapsed completely (acc 0.02, distinct 1, 450k steps).** |
+| 30 | B+C vs C under long training (equal 40k steps, 64-pair probe) | `docs/results/2026-11-16-equal-steps-64-pair-probe.md` | **equal within one seed**: 30–40k mean 55.4 ± 3.1 (titans) vs 56.4 ± 1.5 (combined) of 64; combined has ~half the variance and a higher floor (53.7 vs 43.4). Both still rising. 32-pair run likewise equal (30.2 vs 30.7). Needs ≥ 3 seeds to claim a mean gap. |
 
 **Long-run method note.** Equal wall-clock gave unequal steps (titans 45k on
 the 1660 Ti, combined 81k on the 2060, rmt 450k on the P40): compare by step,
 or budget by steps. Peak temperatures under the guard: 1660 Ti **75 °C**
 (closest to its abort), P40 51 °C at a 150 W cap, 2060 45 °C.
+| 31 | poly2 + omega trains at scale (128-key, 16 pairs, d=64) | same results file | **FAILS**: train acc 0.08 at 20k, 0.74 at 40k (d_feat=2144). The small-spec capability matrix passed; it does not cover this. |
