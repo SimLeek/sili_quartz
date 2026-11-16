@@ -13,6 +13,8 @@ import time
 import numpy as np
 import torch
 
+from sili_quartz.models import FAMILIES
+from sili_quartz.models.common import recall_loss
 from sili_quartz.tasks import (
     RecallSpec,
     accuracy,
@@ -21,8 +23,6 @@ from sili_quartz.tasks import (
     distinct_predictions,
     make_batch,
 )
-from sili_quartz.titans import TitansMAC
-from sili_quartz.titans.mac import recall_loss
 
 
 def main() -> None:
@@ -37,7 +37,7 @@ def main() -> None:
     p.add_argument("--gates", default="const", choices=["const", "kernel_matched"])
     p.add_argument("--eta", type=float, default=0.0)
     p.add_argument("--alpha", type=float, default=0.0)
-    p.add_argument("--no-memory", action="store_true")
+    p.add_argument("--family", default="titans", choices=list(FAMILIES))
     p.add_argument("--no-key-from-prev", action="store_true", help="key writes on the same token (weaker)")
     p.add_argument("--tbptt", type=int, default=64, help="chunks between memory-state detaches")
     p.add_argument("--seed", type=int, default=0)
@@ -49,24 +49,24 @@ def main() -> None:
     spec = RecallSpec(n_pairs=a.pairs, n_queries=a.pairs, gap=a.gap)
     if a.gap > 0:
         assert_gap_hides_pairs(spec, a.chunk)
-    model = TitansMAC(
-        vocab=spec.vocab,
-        d=a.d,
-        n_heads=4,
-        chunk=a.chunk,
-        memory=not a.no_memory,
-        gates=a.gates,
-        eta=a.eta,
-        alpha=a.alpha,
-        write_key_from_prev=not a.no_key_from_prev,
-        tbptt_chunks=a.tbptt,
-    ).to(a.device)
+    kw = dict(vocab=spec.vocab, d=a.d, n_heads=4, chunk=a.chunk)
+    if a.family in ("titans", "combined"):
+        kw.update(
+            gates=a.gates,
+            eta=a.eta,
+            alpha=a.alpha,
+            write_key_from_prev=not a.no_key_from_prev,
+            tbptt_chunks=a.tbptt,
+        )
+    elif a.family == "rmt":
+        kw.update(tbptt_chunks=a.tbptt)
+    model = FAMILIES[a.family](**kw).to(a.device)
     opt = torch.optim.Adam(model.parameters(), lr=a.lr)
     ev_toks, ev_tgts = make_batch(spec, 512, np.random.default_rng(12345))
     ev_toks, ev_tgts = ev_toks.to(a.device), ev_tgts.to(a.device)
     base = constant_predictor_baseline(ev_tgts)
     print(
-        f"device={a.device} gap={a.gap} chunk={a.chunk} pairs={a.pairs} memory={not a.no_memory}",
+        f"device={a.device} gap={a.gap} chunk={a.chunk} pairs={a.pairs} family={a.family}",
         f"key_from_prev={not a.no_key_from_prev} tbptt={a.tbptt}",
         f"params={sum(q.numel() for q in model.parameters())} baseline={base:.4f}",
     )
