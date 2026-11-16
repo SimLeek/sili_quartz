@@ -75,10 +75,15 @@ cost) rather than a pass/fail "better". Record both numbers in the ledger.
   Muon, XL cache (A) as a live control.
 
 ## 5. Compute
-- 3 GPUs online (laptop 1660 Ti; arch-sandbox P40 + 2060), `tools/run_batches.py`.
-  Direct link: `sudo tools/lan_up.sh <host-number> [iface]` (laptop 2, sandbox 1).
-- 2 more GPUs are available via a LAN box + another computer, more after that.
-  If we scale out, **track watts per job** alongside wall-clock in the batch
+- Router LAN (DHCP, 192.168.1.0/24). Hosts are found by MAC, not IP:
+  `tools/lan_hosts.py [name]` reads `~/.config/sili_quartz/lan_hosts` (kept out of
+  this public repo), checks the ARP table, sweeps the wired /24 if needed.
+  `run_batches.py` resolves `sandbox` this way (override: `SQ_REMOTE`).
+  `tools/lan_up.sh` is only for a direct cable with no router.
+- GPUs: laptop 1660 Ti 6 GB; sandbox P40 24 GB + 2060; ai0 GTX 1080 8 GB +
+  1660 SUPER 6 GB (driver 580). ai0 is the user's ttrpg machine: files in
+  `~/claude_code` only, ask before sudo, GPU jobs only if asked.
+- If we scale out, **track watts per job** alongside wall-clock in the batch
   logs, from the start.
 - P40 long runs: power cap 200 W (51 °C at 150 W is far below its limit); watch
   the guard csv. The 1660 Ti is the card nearest its abort (75 °C).

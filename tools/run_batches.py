@@ -21,7 +21,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SSH_KEY = os.path.expanduser("~/.ssh/id_ed25519_sandbox_link")
-REMOTE = "Bee@10.0.0.1"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from lan_hosts import resolve  # noqa: E402
+
+REMOTE = os.environ.get("SQ_REMOTE") or resolve("sandbox")
 REMOTE_PY = "~/venv_quartz/bin/python"
 LOCAL_PY = sys.executable
 
