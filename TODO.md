@@ -17,15 +17,15 @@ record under [Done](#done) at the bottom; results live in `docs/results/`.
 ## 1. Memory-family tests (B, C, B+C, A as control) — Done → [details](#done-1)
 
 ## 1a. PLAN (user, 2026-11-16), in order
-1. **Seeds**: run the same program several times (`--seed`), several processes per
-   GPU; steps are logged so curves are matched afterwards — no step matching, no
-   separate harness. Seeds 1–3 of titans (P40) and combined (2060) running,
-   `runs/seeds/`.
-2. **poly2 at scale**: diagnose why poly2 + omega barely trains at the 128-key /
-   16-pair spec (d_feat = 2144; 13 GB vs 1.2 GB for identity keys); separate
-   poly2 from omega. Base / omega-only / poly2-only runs in `runs/poly/`.
+1. **Seeds** — Done → [details](#done-1a1). Seed 1 never trains for either
+   family (ledger row 32).
+2. **poly2 at scale**: poly2 alone trains (58.4 of 64 at 4k, 1 seed); poly2 +
+   omega does not. Next: omega alone at this spec (one job at a time on the
+   laptop — two at once hit the 80 °C guard), then poly2 on more seeds / steps.
 3. **Ablation tests** for the two required settings (ledger rows 14/15) and the
    gates-not-random-at-init test (row 24).
+4. **Seed-1 failure** (row 32): split `--seed` into data and init seeds, find
+   which one fails, then a test that every seed escapes the start.
 No learning-rate schedules as fixes: that is an oracle solution.
 
 ## 1b. Long-run B+C vs C — Done: combined leads → [details](#done-1b)
@@ -111,7 +111,7 @@ Result: **B cannot bind; C and B+C are the path.** Ledger rows 18/19, 29;
   window titans 55.4 ± 3.1 (min 43.4) vs combined 56.4 ± 1.5 (min 53.7).
   [docs/results/2026-11-16-equal-steps-64-pair-probe.md](docs/results/2026-11-16-equal-steps-64-pair-probe.md)
 - Reading: combined is slightly higher in both experiments and far more stable
-  (half the variance, much better worst case). Seeds (1a.1) size the gap.
+  (half the variance, much better worst case). Seeds: see [1a.1](#done-1a1).
 - Lesson: compare windowed statistics (mean/sd/min over 10k steps), never single evals.
 
 <a id="done-2"></a>
@@ -123,3 +123,14 @@ Result: **B cannot bind; C and B+C are the path.** Ledger rows 18/19, 29;
 - At d_k=64, 32-binding probe: poly2 saturated 32/32; omega alone 28.3 vs base ~19.
 - At scale (128-key, 16 pairs) poly2 + omega **fails to train** (ledger row 31,
   train acc 0.74 at 40k) — open as 1a.2.
+
+<a id="done-1a1"></a>
+## 1a.1 Seeds 0–3, titans vs combined (PR #3)
+[docs/results/2026-11-16-seeds-and-poly2-at-scale.md](docs/results/2026-11-16-seeds-and-poly2-at-scale.md)
+- Same program, `--seed` 0–3, 40k steps, 64-pair stress probe; seeds 1–3 three
+  processes per GPU (titans P40 ~279 min, combined 2060 ~220 min).
+- Seeds that trained (0, 2, 3), 30–40k windowed: titans 54.7, combined 56.3 of
+  64; worst eval 43.4 vs 53.7. Combined ≥ titans for every trained seed.
+- Seed 1 never trains for either family (combined collapses to a constant
+  predictor; titans creeps to 0.07 train acc). titans s3 plateaus until ~10k.
+  Spread is *whether/when training escapes the start* → ledger row 32, plan 1a.4.
