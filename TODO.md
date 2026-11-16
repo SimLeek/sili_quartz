@@ -26,6 +26,13 @@
   C half now (train once, evaluate longer streams / more pairs, no retrain).
 - Prediction to falsify: C falls off at O(d_k) bindings; B at m×d; A at cache length.
 
+## 1b. Long-run B+C vs C — DONE (row 30); next: a probe that does not saturate
+- Rerun with 128-key/128-value vocab, train 16 pairs, stress 64 pairs, EQUAL STEPS
+  (e.g. 40k) on the 2060 and 1660 Ti; log both step and minutes. That decides
+  whether combined's lead grows with training or only converges earlier.
+- P40 long runs: power cap 200 W (user, 2026-11-16: 51 °C at 150 W is far below
+  limit); watch the guard csv. The 1660 Ti is the card nearest its abort (75 °C).
+
 ## 2. ATLAS switches — DONE for poly2 + omega; next: find poly2's ceiling
 - Both landed (377db7e) with the capability matrix green on 3 GPUs. poly2
   saturated the 32-binding probe; omega alone gave 1.5×. Raise the probe:

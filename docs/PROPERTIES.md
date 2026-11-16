@@ -66,3 +66,10 @@ guesses. That is the A/B/C taxonomy's prediction showing up empirically, and
 it is the reason the sili substrate (memory as weights) is the bet. Open: does
 B bind with more depth, a cross-attention write head, or m·d ≫ bindings? Not
 pursued now; C and B+C are the path.
+
+| 30 | B+C vs C under long training (230 min, step-matched; 32-pair / gap-64 stress probe) | `examples/train_recall.py --minutes 230 --stress-pairs 32` logs in `runs/long/` | **combined leads from ~2k steps: 7.5k 30.3 vs 27.2, 20k 30.6 vs 28.8, 40k 31.3 vs 28.7 of 32; reaches stress≥0.9 at 5.5k vs 7k steps; more stable (titans oscillates 0.83–0.96). Cost: slower first 1k steps (6.7 vs 21.6). Probe is saturating near 32, so the gap is compressed — a 64-pair / 128-key probe is needed before claiming it grows. RMT alone at this spec collapsed completely (acc 0.02, distinct 1, 450k steps).** |
+
+**Long-run method note.** Equal wall-clock gave unequal steps (titans 45k on
+the 1660 Ti, combined 81k on the 2060, rmt 450k on the P40): compare by step,
+or budget by steps. Peak temperatures under the guard: 1660 Ti **75 °C**
+(closest to its abort), P40 51 °C at a 150 W cap, 2060 45 °C.
