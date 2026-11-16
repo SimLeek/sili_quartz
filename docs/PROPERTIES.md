@@ -55,6 +55,14 @@ work) and #19 (capacity cliff), since the kernel port must preserve them.
 | # | property | test | status |
 |---|---|---|---|
 | 26 | A (attention only) cannot do beyond-window recall | [`test_no_memory_cannot_do_long_gap`](../tests/test_mac.py) | measured 0.056 vs baseline 0.071 |
-| 27 | B (RMT) learns beyond-window recall through passed tokens alone | [`test_family_learns_long_gap_recall[rmt]`](../tests/test_mac.py) | running |
-| 28 | B+C (Combined) learns it | [`test_family_learns_long_gap_recall[combined]`](../tests/test_mac.py) | running |
-| 29 | Bindings recovered per family at 32 live, d=64 (B ~ m·d, C ~ d_k/4, B+C ≥ max) | [`test_family_capacity_probe`](../tests/test_mac.py) | running |
+| 27 | B (RMT) learns beyond-window recall through passed tokens alone | [`test_family_learns_long_gap_recall[rmt]`](../tests/test_mac.py) | **FAILS, strict-xfail. Measured 0.33±0.01 for m=4 and m=16, with and without a 0→4→8→16 gap curriculum (4 runs). Per-pair accuracy uniform across write order (0.31–0.36): it carries the SET of written values (1/3 ≈ guessing among them) but never binds key→value.** |
+| 28 | B+C (Combined) learns it | [`test_family_learns_long_gap_recall[combined]`](../tests/test_mac.py) | **passes** (800 steps) |
+| 29 | Bindings recovered per family at 32 live, d=64 | [`test_family_capacity_probe`](../tests/test_mac.py) | **rmt 1.5 (train acc 0.15 — cannot learn 8 pairs), titans 19.4, combined 23.7.** B+C > C by ~4: the state tokens add capacity when an associative store exists, even though alone they cannot bind. The prediction "B ∝ m·d" is FALSIFIED at this scale — B's limit is binding, not slots. |
+
+**Reading of the family matrix.** C stores functions (an outer product k vᵀ *is*
+a binding); B stores a point and must *learn* to bind inside it through BPTT,
+and at 2 layers / 3000 steps it does not — it learns the bag of values and
+guesses. That is the A/B/C taxonomy's prediction showing up empirically, and
+it is the reason the sili substrate (memory as weights) is the bet. Open: does
+B bind with more depth, a cross-attention write head, or m·d ≫ bindings? Not
+pursued now; C and B+C are the path.

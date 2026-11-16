@@ -176,8 +176,17 @@ def test_omega_keeps_capacity():
 # ---- family matrix: B, C, B+C must learn beyond the window; A must not ----
 
 
+# RMT (B) measured 2026-11-15: 0.33 +- 0.01 beyond-window accuracy for m=4 and m=16, with
+# and without a 0->4->8->16 gap curriculum; per-pair accuracy uniform (0.31-0.36) across
+# write order. It carries the SET of written values but does not bind key->value. Strict
+# xfail: if B ever clears the bar this fails loudly and the ledger must be updated.
+RMT_XFAIL = pytest.mark.xfail(
+    strict=True, reason="RMT plateaus at ~0.33: bag of values, no key->value binding"
+)
+
+
 @pytest.mark.integration
-@pytest.mark.parametrize("family", ["rmt", "combined"])
+@pytest.mark.parametrize("family", [pytest.param("rmt", marks=RMT_XFAIL), "combined"])
 def test_family_learns_long_gap_recall(family):
     torch.manual_seed(0)
     spec = RecallSpec(n_pairs=3, n_queries=3, gap=16)
@@ -200,7 +209,7 @@ def _family_capacity(family, train_pairs=8, eval_pairs=32, steps=1500, seed=0):
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("family", ["rmt", "titans", "combined"])
+@pytest.mark.parametrize("family", [pytest.param("rmt", marks=RMT_XFAIL), "titans", "combined"])
 def test_family_capacity_probe(family):
     """Records bindings recovered per family (the ledger's B-vs-C question); only requires learning."""
     acc_train, _rec = _family_capacity(family)

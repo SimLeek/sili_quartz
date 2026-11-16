@@ -39,6 +39,9 @@ def main() -> None:
     p.add_argument("--alpha", type=float, default=0.0)
     p.add_argument("--family", default="titans", choices=list(FAMILIES))
     p.add_argument("--mem-tokens", type=int, default=4, help="RMT/combined state tokens")
+    p.add_argument(
+        "--gap-curriculum", default="", help="comma list of gaps to train through in order, e.g. 0,8,16"
+    )
     p.add_argument("--no-key-from-prev", action="store_true", help="key writes on the same token (weaker)")
     p.add_argument("--tbptt", type=int, default=64, help="chunks between memory-state detaches")
     p.add_argument("--seed", type=int, default=0)
@@ -73,8 +76,11 @@ def main() -> None:
     )
 
     t0 = time.time()
+    stages = [int(g) for g in a.gap_curriculum.split(",") if g != ""] or [a.gap]
+    per_stage = max(1, a.steps // len(stages))
     for step in range(1, a.steps + 1):
-        toks, tgts = make_batch(spec, a.batch, rng)
+        stage_gap = stages[min((step - 1) // per_stage, len(stages) - 1)]
+        toks, tgts = make_batch(RecallSpec(n_pairs=a.pairs, n_queries=a.pairs, gap=stage_gap), a.batch, rng)
         logits, _ = model(toks.to(a.device))
         loss = recall_loss(logits, tgts.to(a.device))
         opt.zero_grad()

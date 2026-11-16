@@ -15,7 +15,7 @@
       sili_quartz/titans/     (current location; migrates into models/ when rmt lands)
 
 
-## 1. Memory-family tests: B, C, B+C, and why A fails them — models BUILT (PR #2), matrix running
+## 1. Memory-family tests: B, C, B+C, and why A fails them — DONE (PR #2). B cannot bind; C and B+C are the path
 - C exists (`TitansMAC`, memory=True). Add **B**: RMT-style register of m
   memory tokens read/written per chunk, state carried across chunks, gradient
   via `tbptt_chunks`. Add **B+C** (both on). **A**: Transformer-XL cache of the
