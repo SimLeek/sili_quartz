@@ -67,7 +67,7 @@ it is the reason the sili substrate (memory as weights) is the bet. Open: does
 B bind with more depth, a cross-attention write head, or m·d ≫ bindings? Not
 pursued now; C and B+C are the path.
 
-| 30 | B+C vs C under long training (equal 40k steps, 64-pair probe) | `docs/results/2026-11-16-equal-steps-64-pair-probe.md` | **equal within one seed**: 30–40k mean 55.4 ± 3.1 (titans) vs 56.4 ± 1.5 (combined) of 64; combined has ~half the variance and a higher floor (53.7 vs 43.4). Both still rising. 32-pair run likewise equal (30.2 vs 30.7). Needs ≥ 3 seeds to claim a mean gap. |
+| 30 | B+C beats C under long training | `docs/results/2026-11-16-equal-steps-64-pair-probe.md` | **combined leads in both long experiments**: windowed 56.4 ± 1.5 vs 55.4 ± 3.1 of 64, and 30.7 vs 30.2 of 32; worst eval 53.7 vs 43.4. Seeds 1–3 running to size the gap. |
 
 **Long-run method note.** Equal wall-clock gave unequal steps (titans 45k on
 the 1660 Ti, combined 81k on the 2060, rmt 450k on the P40): compare by step,

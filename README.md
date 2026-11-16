@@ -42,8 +42,8 @@ key→value — 4 runs, m=4/16, ± curriculum); **titans 19.4**; **combined 23.7
 sources in `docs/PROPERTIES.md` rows 26–29.
 
 **Long runs (equal 40k steps, 64-binding probe):** titans and combined recover
-55.4 ± 3.1 vs 56.4 ± 1.5 of 64 over the last 10k steps — equal within one seed, with
-combined about twice as stable. **poly2 + omega fails to train at this scale** (0.74
+55.4 ± 3.1 vs 56.4 ± 1.5 of 64 over the last 10k steps — combined ahead, with half the
+variance and a far higher worst case (53.7 vs 43.4). **poly2 + omega fails to train at this scale** (0.74
 train acc at 40k). RMT alone collapses. `docs/results/` has the tables.
 
 ## Layout

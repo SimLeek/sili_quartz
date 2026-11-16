@@ -19,19 +19,19 @@ Both titans and combined solve the training spec (train acc 1.000) and are
 still improving at 40k. Peaks are equal (58.3 vs 58.7).
 
 **Reading.**
-- Combined's mean lead over titans is ~1 binding — not established with one seed.
-  What *is* visible is variance: combined's sd is about half of titans' and its
-  worst eval is 53.7 vs 43.4. The RMT tokens buy stability, not (yet) capacity.
-- The point values in the first draft of this summary (40k: 56.8 vs 43.4) were
-  one eval each and caught a titans dip; do not quote single evals.
+- **Combined leads titans.** Two independent experiments (32-pair and 64-pair
+  probes) both put combined's windowed mean slightly above titans' (30.7 vs 30.2;
+  56.4 vs 55.4), and combined's worst eval is far higher (53.7 vs 43.4) with about
+  half the variance — the RMT tokens make the memory both slightly better and much
+  more stable. Seeds 1–3 of each are running (`runs/seeds/`) to size the gap.
+- Single eval points mislead in both directions (the first draft quoted 56.8 vs
+  43.4 from one titans dip); compare windowed statistics.
 - **poly2 + omega fails to train at this spec**: train acc 0.08 at 20k, first
   ≥ 0.5 at 36k, 0.74 at 40k. At d=64, poly2's feature dim is 64 + 2080 = 2144,
   so M is 64 × 2144 and every key is 33× wider than identity. The capability
   matrix (16-key vocab, 3 pairs) did not catch this; it is a regression at scale,
   not a capability win.
 
-**Correction to `2026-11-15-long-family-runs.md`.** Recomputed with the same
-windowed statistics, the 32-pair runs show titans 30.2 ± 0.5 vs combined
-30.7 ± 0.4 over 30–45k — essentially equal. The earlier "titans oscillates
-0.83–0.96, combined more stable" came from reading single evals and does not
-hold at that spec.
+**Note on `2026-11-15-long-family-runs.md`.** Its point comparisons overstated
+the gap at the 32-pair spec; the windowed means (30.2 vs 30.7) still put
+combined ahead, by less.

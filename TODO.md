@@ -26,7 +26,17 @@
   C half now (train once, evaluate longer streams / more pairs, no retrain).
 - Prediction to falsify: C falls off at O(d_k) bindings; B at m×d; A at cache length.
 
-## 1b. Long-run B+C vs C — DONE (row 30); next: a probe that does not saturate
+## 1a. PLAN (user, 2026-11-16), in order
+1. **Seeds**: run the same program several times (`--seed`), several processes per
+   GPU; steps are logged so curves are matched afterwards — no step matching, no
+   separate harness. Seeds 1–3 of titans (P40) and combined (2060) running.
+2. **poly2 at scale**: diagnose why poly2 + omega barely trains at the 128-key /
+   16-pair spec (d_feat = 2144); separate poly2 from omega.
+3. **Ablation tests** for the two required settings (ledger rows 14/15) and the
+   gates-not-random-at-init test (row 24).
+No learning-rate schedules as fixes: that is an oracle solution.
+
+## 1b. Long-run B+C vs C — DONE (row 30): combined leads
 - Rerun with 128-key/128-value vocab, train 16 pairs, stress 64 pairs, EQUAL STEPS
   (e.g. 40k) on the 2060 and 1660 Ti; log both step and minutes. That decides
   whether combined's lead grows with training or only converges earlier.

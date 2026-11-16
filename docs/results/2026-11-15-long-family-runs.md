@@ -32,9 +32,9 @@ titans; arch-sandbox: combined, rmt). Columns:
 RMT alone (m=8): max train acc 0.022, `distinct` = 1 for all 450k steps —
 total collapse at this spec (short runs had plateaued at 0.33).
 
-**CORRECTION (2026-11-16):** windowed over 30–45k steps the stress probe gives titans 30.2 ± 0.5 vs combined 30.7 ± 0.4 of 32 — essentially equal. The point comparisons below and the stability claim came from single evals; see `2026-11-16-equal-steps-64-pair-probe.md`.
+**Note (2026-11-16):** windowed over 30–45k steps: titans 30.2 ± 0.5 vs combined 30.7 ± 0.4 of 32 — combined ahead, by less than the single-eval comparisons below suggest.
 
-**Reading (original, superseded).** Both families solve the training spec by ~2k steps. Combined
+**Reading.** Both families solve the training spec by ~2k steps. Combined
 (B+C) leads titans (C) on the stress probe from ~2k steps on, reaches 0.9
 earlier, and is more stable (titans oscillates 0.83–0.96). Its cost is the
 slower first ~1k steps — the tradeoff predicted. The probe saturates near
