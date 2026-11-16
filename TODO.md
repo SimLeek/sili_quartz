@@ -51,8 +51,9 @@ cost) rather than a pass/fail "better". Record both numbers in the ledger.
 - **Adam → sili importance (single-state optimizer).** Expected: worse
   accuracy/steps until the mean/variance control and eigenvalue stochastic
   annealing land (those may recover it). The benefit that is certain is RAM:
-  ~2/3 of the full model's footprint for the same model, because sili keeps no
-  backprop state. Test: same curves as above plus peak memory per parameter;
+  **~1/2 of the full model's footprint** for the same model, because sili keeps
+  no backprop state at all. (The 1-value-per-parameter optimizer alone would
+  be the 2/3 figure on a conventional engine; sili's saving is larger.) Test: same curves as above plus peak memory per parameter;
   a regression in steps-to-threshold is EXPECTED and must be quantified, not
   hidden. Adam remains the diagnostic reference.
 
