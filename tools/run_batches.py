@@ -79,7 +79,8 @@ def sync_remote() -> None:
 
 def launch(b: Batch, log_dir: Path, max_temp: int) -> tuple[Batch, subprocess.Popen]:
     env = f"CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES={b.gpu} SQ_DEVICE=cuda"
-    pytest = f'-m pytest -q -m integration -k "{b.k}" -p no:cacheprovider'
+    # -rP keeps the stdout of PASSED tests, which is where the [capacity] numbers are.
+    pytest = f'-m pytest -q -rP -m integration -k "{b.k}" -p no:cacheprovider'
     # Every batch runs under the temperature kill-switch. The P40's blower is
     # invisible to the driver, so this is the only thing between a long batch
     # and firmware slowdown at 92C.

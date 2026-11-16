@@ -38,6 +38,7 @@ def main() -> None:
     p.add_argument("--eta", type=float, default=0.0)
     p.add_argument("--alpha", type=float, default=0.0)
     p.add_argument("--family", default="titans", choices=list(FAMILIES))
+    p.add_argument("--mem-tokens", type=int, default=4, help="RMT/combined state tokens")
     p.add_argument("--no-key-from-prev", action="store_true", help="key writes on the same token (weaker)")
     p.add_argument("--tbptt", type=int, default=64, help="chunks between memory-state detaches")
     p.add_argument("--seed", type=int, default=0)
@@ -59,7 +60,7 @@ def main() -> None:
             tbptt_chunks=a.tbptt,
         )
     elif a.family == "rmt":
-        kw.update(tbptt_chunks=a.tbptt)
+        kw.update(tbptt_chunks=a.tbptt, mem_tokens=a.mem_tokens)
     model = FAMILIES[a.family](**kw).to(a.device)
     opt = torch.optim.Adam(model.parameters(), lr=a.lr)
     ev_toks, ev_tgts = make_batch(spec, 512, np.random.default_rng(12345))
