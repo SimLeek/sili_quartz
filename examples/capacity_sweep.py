@@ -9,9 +9,9 @@ from __future__ import annotations
 import numpy as np
 import torch
 
+from sili_quartz.models import TitansMAC
+from sili_quartz.models.common import recall_loss
 from sili_quartz.tasks import RecallSpec, accuracy, constant_predictor_baseline, make_batch
-from sili_quartz.titans import TitansMAC
-from sili_quartz.titans.mac import recall_loss
 
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
 CHUNK, TRAIN_PAIRS, TRAIN_GAP, STEPS = 8, 4, 16, 1500

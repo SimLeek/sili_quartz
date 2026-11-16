@@ -3,7 +3,7 @@ import torch
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from sili_quartz.titans import MemoryState, TitansMemory
+from sili_quartz.models import MemoryState, TitansMemory
 
 
 def _mem(d=8, **kw):
@@ -106,7 +106,7 @@ def _store_exact(m, x, k_src=None):
 
 
 def test_poly2_feature_dimension():
-    from sili_quartz.titans.memory import poly2
+    from sili_quartz.models.memory import poly2
 
     k = torch.randn(2, 3, 8)
     assert poly2(k).shape == (2, 3, 8 + 36)
