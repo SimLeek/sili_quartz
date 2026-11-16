@@ -39,11 +39,19 @@ P40 is launch-latency-bound on tiny steps; give it the big-batch jobs).
 ## Layout
 
 ```
-sili_quartz/titans/memory.py   TitansMemory  eqs 10-15, batched, closed-form delta rule, const or Law-5 gates
-sili_quartz/titans/mac.py      TitansMAC     chunked memory-as-context transformer
+sili_quartz/models/
+  transformer.py   A  chunked causal attention, no memory        (control)
+  rmt.py           B  passed state tokens (RMT)
+  titans.py        C  memory as weights (Titans MAC + switches)
+  combined.py      B+C (ARMT-style)
+  memory.py        TitansMemory: eqs 10-15, poly2 keys, Omega window, Law-5 gates
+  common.py        shared Block + one segment mask
+  *_sili.py        (planned) the same models on sili kernels, same tests
 sili_quartz/tasks/recall.py    key-value recall with a gap; honest baseline; leak check
-examples/train_recall.py       the run above
-docs/PROPERTIES.md             what a working Titans must do, sourced, mapped to tests
+examples/                      train_recall.py --family …, capacity_sweep.py
+tools/run_batches.py           integration batches across the 3 GPUs under tools/gpu_guard.sh
+docs/PROPERTIES.md             what a working model must do, sourced, mapped to tests
+docs/ARCHITECTURES.md          why these four families and not more
 tests/                         fast unit tests; `-m integration` trains for real
 ```
 

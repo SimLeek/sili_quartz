@@ -49,3 +49,12 @@ rows are integration tests (`pytest -m integration`). "todo" rows are
 properties the literature says matter that nothing here checks yet — the
 first ones to add are #14/#15 (ablations of the two things that made #13
 work) and #19 (capacity cliff), since the kernel port must preserve them.
+
+## Family matrix (A / B / C / B+C), ledger rows 26-29
+
+| # | property | test | status |
+|---|---|---|---|
+| 26 | A (attention only) cannot do beyond-window recall | [`test_no_memory_cannot_do_long_gap`](../tests/test_mac.py) | measured 0.056 vs baseline 0.071 |
+| 27 | B (RMT) learns beyond-window recall through passed tokens alone | [`test_family_learns_long_gap_recall[rmt]`](../tests/test_mac.py) | running |
+| 28 | B+C (Combined) learns it | [`test_family_learns_long_gap_recall[combined]`](../tests/test_mac.py) | running |
+| 29 | Bindings recovered per family at 32 live, d=64 (B ~ m·d, C ~ d_k/4, B+C ≥ max) | [`test_family_capacity_probe`](../tests/test_mac.py) | running |
