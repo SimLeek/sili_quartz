@@ -51,6 +51,10 @@ def main() -> None:
     p.add_argument("--stress-pairs", type=int, default=0, help="also eval at this many pairs (0 = off)")
     p.add_argument("--stress-gap", type=int, default=0)
     p.add_argument("--log", default="", help="CSV path for eval rows")
+    p.add_argument(
+        "--features", default="identity", choices=["identity", "poly2"], help="titans/combined memory keys"
+    )
+    p.add_argument("--window", type=int, default=1, help="titans/combined Omega window (1 = per-token)")
     p.add_argument("--no-key-from-prev", action="store_true", help="key writes on the same token (weaker)")
     p.add_argument("--tbptt", type=int, default=64, help="chunks between memory-state detaches")
     p.add_argument("--seed", type=int, default=0)
@@ -70,6 +74,8 @@ def main() -> None:
             alpha=a.alpha,
             write_key_from_prev=not a.no_key_from_prev,
             tbptt_chunks=a.tbptt,
+            features=a.features,
+            window=a.window,
         )
     elif a.family == "rmt":
         kw.update(tbptt_chunks=a.tbptt, mem_tokens=a.mem_tokens)
