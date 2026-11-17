@@ -28,7 +28,12 @@ record under [Done](#done) at the bottom; results live in `docs/results/`.
    optimizer later to see if the optimizer fix heals it. Test: every seed
    escapes the start within N steps (expected to fail under Adam — mark xfail
    with the reason, don't paper over it).
-5. Then the **2b tradeoff tests**.
+5. **40k seeds for the omega arms** (running): titans + omega and combined +
+   omega, seeds 0–6 each, same spec as the 7-seed runs (`runs/omega40/`).
+6. **After this PR merges: port all three to sili CUDA kernels** — titans,
+   combined, and the omega window (user, 2026-11-17: the data does not rule any
+   of them out). Same tests per kernel; Adam is the known non-exact exception.
+   The start-up fixture (1a.4) and the 2b tradeoff tests then run on sili.
 No learning-rate schedules as fixes: that is an oracle solution.
 No torch step-speed work: speed is not the limit now; speedups happen in sili.
 No further B/C-family literature to fold in (user, 2026-11-16).
