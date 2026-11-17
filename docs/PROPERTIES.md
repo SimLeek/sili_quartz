@@ -67,11 +67,11 @@ it is the reason the sili substrate (memory as weights) is the bet. Open: does
 B bind with more depth, a cross-attention write head, or m·d ≫ bindings? Not
 pursued now; C and B+C are the path.
 
-| 30 | B+C beats C under long training | `docs/results/2026-11-17-seven-seeds-split-omega.md` | **combined ahead, narrowly**: 7 seeds, over the 6 that train 55.9 ± 1.5 vs 55.2 ± 1.8 of 64 (30–40k), higher in 4 of 6 paired seeds (+0.8 mean), mean of window minima 52.2 vs 50.0; worst single eval equal (43.4). |
+| 30 | B+C beats C under long training | `docs/results/2026-11-17-omega-forty-k-seeds.md` | **not separated**: 7 seeds × 4 arms. Without omega combined is narrowly ahead (55.9 ± 1.5 vs 55.2 ± 1.8, 4 of 6 paired). With omega titans is ahead on the mean (56.9 ± 2.0, 7/7 train vs 56.4 ± 2.1, 6/7), combined on worst case (window min 49.7 vs 44.3). All three kept for the sili port. |
 
 **Long-run method note.** Equal wall-clock gave unequal steps (titans 45k on
 the 1660 Ti, combined 81k on the 2060, rmt 450k on the P40): compare by step,
 or budget by steps. Peak temperatures under the guard: 1660 Ti **75 °C**
 (closest to its abort), P40 51 °C at a 150 W cap, 2060 45 °C.
 | 31 | poly2 + omega trains at scale (128-key, 16 pairs, d=64) | `docs/results/2026-11-17-seven-seeds-split-omega.md` | **FAILS** at full size and at `poly_rank=16`. Alone each trains: omega 3/3 seeds (2–4k 51.8); full poly2 2/2 (58.1, 48.2; 13 GB); poly2 r16 1/2 (59.5, seed 2 collapses; 1.06 GB). **poly2 dropped** (user, 2026-11-17). |
-| 32 | Training escapes the start for every seed | `docs/results/2026-11-17-seven-seeds-split-omega.md` | **FAILS** in every arm, on a seed that moves with the config: titans/combined seed 1 (combined on data stream 1 alone; titans only init 1 + data 1), combined + omega seed 2 (plateau), poly2 r16 seed 2 (collapse). Omega rescues combined on seed 1. No test yet. |
+| 32 | Training escapes the start for every seed | `docs/results/2026-11-17-omega-forty-k-seeds.md` | **FAILS** in 3 of 4 arms. Titans + omega trains 7/7. The failing seed moves with the config (titans/combined s1, combined + omega s5) and with the GPU: combined + omega s2 stalled on ai0 but trained at 4.5k on the 2060. No test yet. |

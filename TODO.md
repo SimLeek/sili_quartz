@@ -28,8 +28,7 @@ record under [Done](#done) at the bottom; results live in `docs/results/`.
    optimizer later to see if the optimizer fix heals it. Test: every seed
    escapes the start within N steps (expected to fail under Adam — mark xfail
    with the reason, don't paper over it).
-5. **40k seeds for the omega arms** (running): titans + omega and combined +
-   omega, seeds 0–6 each, same spec as the 7-seed runs (`runs/omega40/`).
+5. **40k seeds for the omega arms** — Done → [details](#done-1a5)
 6. **After this PR merges: port all three to sili CUDA kernels** — titans,
    combined, and the omega window (user, 2026-11-17: the data does not rule any
    of them out). Same tests per kernel; Adam is the known non-exact exception.
@@ -37,7 +36,6 @@ record under [Done](#done) at the bottom; results live in `docs/results/`.
 No learning-rate schedules as fixes: that is an oracle solution.
 No torch step-speed work: speed is not the limit now; speedups happen in sili.
 No further B/C-family literature to fold in (user, 2026-11-16).
-No learning-rate schedules as fixes: that is an oracle solution.
 
 ## 1b. Long-run B+C vs C — Done: combined leads → [details](#done-1b)
 
@@ -169,3 +167,17 @@ not learnable parameters, identical across seeds.
 - Omega alone trains 3/3 (2–4k 51.8 on each), so omega stays.
 - Removed: `features`, `poly_rank`, `poly2()`, the poly2 unit/integration tests and
   the `--features/--poly-rank` flags.
+
+<a id="done-1a5"></a>
+## 1a.5 40k seeds for the omega arms (2026-11-17)
+
+Titans + omega and combined + omega, seeds 0–6, 40k steps, same spec as the
+7-seed runs. Results: [docs/results/2026-11-17-omega-forty-k-seeds.md](docs/results/2026-11-17-omega-forty-k-seeds.md).
+- titans + omega: 7/7 train, 30–40k 56.9 ± 2.0 of 64, six seeds at 57.6–58.0.
+- combined + omega: 6/7 (seed 5 stuck at acc 0.09), 56.4 ± 2.1, best worst
+  case (window min 49.7).
+- Plain: titans 55.2 ± 1.8, combined 55.9 ± 1.5, each 6/7.
+- Start-up is not reproducible across GPUs: combined + omega s2 stalled on ai0
+  (10k run) and trained at 4.5k on the 2060. The 1a.4 fixture needs pinned
+  hardware or a failure count over many seeds.
+- 1080 peak 77 °C (3 under the abort), 1660 SUPER 70, 2060 63, P40 51.

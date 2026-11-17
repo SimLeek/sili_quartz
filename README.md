@@ -43,8 +43,9 @@ sources in `docs/PROPERTIES.md` rows 26–29.
 **Long runs (40k steps, 128-key vocab, 64-binding probe, 7 seeds):** over the 6
 seeds that train, combined recovers 55.9 ± 1.5 and titans 55.2 ± 1.8 of 64 in the
 last 10k steps; combined is higher on 4 of 6 seeds. Seed 1 fails for both
-(combined on its data stream alone). Omega alone trains on 3/3 seeds and leads
-the plain matrix early (51.8 vs 40–50 at 2–4k). poly2 was dropped: with omega it
+(combined on its data stream alone). With the omega window titans trains on all
+7 seeds (56.9 ± 2.0) and combined + omega on 6 (56.4 ± 2.1, best worst case);
+no arm is ruled out, and all are being ported to sili. poly2 was dropped: with omega it
 stalls at full size and at rank 16, and rank 16 alone fails to start on 1 of 2
 seeds. `docs/results/` has the tables.
 
