@@ -19,13 +19,23 @@ record under [Done](#done) at the bottom; results live in `docs/results/`.
 ## 1a. PLAN (user, 2026-11-16), in order
 1. **Seeds** — Done → [details](#done-1a1). Seed 1 never trains for either
    family (ledger row 32).
-2. **poly2 at scale**: poly2 alone trains (58.4 of 64 at 4k, 1 seed); poly2 +
-   omega does not. Next: omega alone at this spec (one job at a time on the
-   laptop — two at once hit the 80 °C guard), then poly2 on more seeds / steps.
+2. **poly2 at scale**: poly2 alone trains (58.4 of 64 at 4k, 1 seed); omega alone
+   trains (3 seeds); together they do not. Try ONE small poly2 (low-rank or on a
+   projected key) that fixes the 13 GB and the combination; if that needs a pile
+   of extra machinery, **drop poly2** (user, 2026-11-16).
 3. **Ablation tests** for the two required settings (ledger rows 14/15) and the
    gates-not-random-at-init test (row 24).
-4. **Seed-1 failure** (row 32): split `--seed` into data and init seeds, find
-   which one fails, then a test that every seed escapes the start.
+4. **Seed-1 failure** (row 32): seed split says combined fails on *data stream 1*
+   (init 1 trains). Hypothesis (user): early training + Adam without stochastic
+   annealing; industry would discard such runs, sili may recover them. A hard
+   data stream is an ASSET: keep it as a fixture and re-run it under the sili
+   optimizer later to see if the optimizer fix heals it. Test: every seed
+   escapes the start within N steps (expected to fail under Adam — mark xfail
+   with the reason, don't paper over it).
+5. Then the **2b tradeoff tests**.
+No learning-rate schedules as fixes: that is an oracle solution.
+No torch step-speed work: speed is not the limit now; speedups happen in sili.
+No further B/C-family literature to fold in (user, 2026-11-16).
 No learning-rate schedules as fixes: that is an oracle solution.
 
 ## 1b. Long-run B+C vs C — Done: combined leads → [details](#done-1b)
@@ -65,10 +75,6 @@ cost) rather than a pass/fail "better". Record both numbers in the ledger.
   will change these properties too — include it as an arm, not a footnote.
 
 ## 4. Still open from before
-- PROPERTIES.md rows 14/15 ablation tests; row 24 (gates not random at init) — see 1a.3.
-- Step speed: runs are kernel-launch-bound (~2.5 steps/s). Profile one step,
-  then torch.compile / CUDA Graphs / vectorized write, with a parity test.
-  (Proposed, awaiting go-ahead.)
 - Then: peridot-style (sili Tensor) port, then CUDA kernels one at a time,
   each passing the same tests. Adam is the known non-exact exception.
 - Later: Omega distractor test (row 20), chunk sweep, MIRAS losses, MLP memory,
