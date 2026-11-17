@@ -51,10 +51,6 @@ def main() -> None:
     p.add_argument("--stress-pairs", type=int, default=0, help="also eval at this many pairs (0 = off)")
     p.add_argument("--stress-gap", type=int, default=0)
     p.add_argument("--log", default="", help="CSV path for eval rows")
-    p.add_argument(
-        "--features", default="identity", choices=["identity", "poly2"], help="titans/combined memory keys"
-    )
-    p.add_argument("--poly-rank", type=int, default=None, help="poly2 on a learned r-dim projection (default: full)")
     p.add_argument("--window", type=int, default=1, help="titans/combined Omega window (1 = per-token)")
     p.add_argument("--no-key-from-prev", action="store_true", help="key writes on the same token (weaker)")
     p.add_argument("--tbptt", type=int, default=64, help="chunks between memory-state detaches")
@@ -76,8 +72,6 @@ def main() -> None:
             alpha=a.alpha,
             write_key_from_prev=not a.no_key_from_prev,
             tbptt_chunks=a.tbptt,
-            features=a.features,
-            poly_rank=a.poly_rank,
             window=a.window,
         )
     elif a.family == "rmt":

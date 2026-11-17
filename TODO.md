@@ -19,10 +19,7 @@ record under [Done](#done) at the bottom; results live in `docs/results/`.
 ## 1a. PLAN (user, 2026-11-16), in order
 1. **Seeds** — Done → [details](#done-1a1). Seed 1 never trains for either
    family (ledger row 32).
-2. **poly2 at scale**: poly2 + omega fails at full size and at `poly_rank=16`;
-   omega alone trains 3/3; poly2 r16 alone best run so far (59.5) but 1/2 seeds
-   train. Keep-or-drop poly2: **user's call** (results in
-   docs/results/2026-11-17-seven-seeds-split-omega.md).
+2. **poly2** — Dropped (user, 2026-11-17) → [details](#done-1a2)
 3. **Ablation tests** (rows 14/15/24) — Done → [details](#done-1a3)
 4. **Seed-1 failure** (row 32): combined fails on *data stream 1* alone; titans
    only with init 1 + data 1; poly2 r16 collapses on seed 2. Hypothesis (user): early training + Adam without stochastic
@@ -39,7 +36,7 @@ No learning-rate schedules as fixes: that is an oracle solution.
 
 ## 1b. Long-run B+C vs C — Done: combined leads → [details](#done-1b)
 
-## 2. ATLAS switches poly2 + omega — Done at d_k=64 → [details](#done-2); open: poly2 at scale (1a.2)
+## 2. ATLAS switches — omega kept, poly2 dropped → [details](#done-2)
 
 ## 2b. Two planned changes are TRADEOFFS, not wins — test them as such
 Each gets a two-axis measurement (what it should improve, what it should
@@ -156,3 +153,14 @@ positive test must clear:
 - alpha 0.5, a random-init-like forget gate (row 24): 0.061, chance.
 `test_default_gates_are_not_random` (row 24, unit): defaults alpha = eta = 0,
 not learnable parameters, identical across seeds.
+
+<a id="done-1a2"></a>
+## 1a.2 poly2 at scale — dropped (user, 2026-11-17)
+[docs/results/2026-11-17-seven-seeds-split-omega.md](docs/results/2026-11-17-seven-seeds-split-omega.md)
+- poly2 + omega stalls at full size (d_feat 2144, 13 GB) and at `poly_rank=16`
+  (200 features, 1.06 GB).
+- Alone: full poly2 trains 2/2 (2–4k 58.1, 48.2); rank 16 trains 1/2 (59.5, the
+  best run, but seed 2 collapses to a constant on a stream every other arm trains).
+- Omega alone trains 3/3 (2–4k 51.8 on each), so omega stays.
+- Removed: `features`, `poly_rank`, `poly2()`, the poly2 unit/integration tests and
+  the `--features/--poly-rank` flags.
