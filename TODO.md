@@ -19,13 +19,13 @@ record under [Done](#done) at the bottom; results live in `docs/results/`.
 ## 1a. PLAN (user, 2026-11-16), in order
 1. **Seeds** — Done → [details](#done-1a1). Seed 1 never trains for either
    family (ledger row 32).
-2. **poly2 at scale**: poly2 alone trains (58.4 of 64 at 4k, 1 seed); omega alone
-   trains (3 seeds); together they do not. Try ONE small poly2 (low-rank or on a
-   projected key) that fixes the 13 GB and the combination; if that needs a pile
-   of extra machinery, **drop poly2** (user, 2026-11-16).
+2. **poly2 at scale**: poly2 + omega fails at full size and at `poly_rank=16`;
+   omega alone trains 3/3; poly2 r16 alone best run so far (59.5) but 1/2 seeds
+   train. Keep-or-drop poly2: **user's call** (results in
+   docs/results/2026-11-17-seven-seeds-split-omega.md).
 3. **Ablation tests** (rows 14/15/24) — Done → [details](#done-1a3)
-4. **Seed-1 failure** (row 32): seed split says combined fails on *data stream 1*
-   (init 1 trains). Hypothesis (user): early training + Adam without stochastic
+4. **Seed-1 failure** (row 32): combined fails on *data stream 1* alone; titans
+   only with init 1 + data 1; poly2 r16 collapses on seed 2. Hypothesis (user): early training + Adam without stochastic
    annealing; industry would discard such runs, sili may recover them. A hard
    data stream is an ASSET: keep it as a fixture and re-run it under the sili
    optimizer later to see if the optimizer fix heals it. Test: every seed

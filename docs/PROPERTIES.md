@@ -67,11 +67,11 @@ it is the reason the sili substrate (memory as weights) is the bet. Open: does
 B bind with more depth, a cross-attention write head, or m·d ≫ bindings? Not
 pursued now; C and B+C are the path.
 
-| 30 | B+C beats C under long training | `docs/results/2026-11-16-equal-steps-64-pair-probe.md`, `docs/results/2026-11-16-seeds-and-poly2-at-scale.md` | **combined leads**: over seeds that trained (0, 2, 3) 56.3 vs 54.7 of 64 (30–40k windowed), worst eval 53.7 vs 43.4; 30.7 vs 30.2 of 32. Seed 1 never trains for EITHER family (see row 32). |
+| 30 | B+C beats C under long training | `docs/results/2026-11-17-seven-seeds-split-omega.md` | **combined ahead, narrowly**: 7 seeds, over the 6 that train 55.9 ± 1.5 vs 55.2 ± 1.8 of 64 (30–40k), higher in 4 of 6 paired seeds (+0.8 mean), mean of window minima 52.2 vs 50.0; worst single eval equal (43.4). |
 
 **Long-run method note.** Equal wall-clock gave unequal steps (titans 45k on
 the 1660 Ti, combined 81k on the 2060, rmt 450k on the P40): compare by step,
 or budget by steps. Peak temperatures under the guard: 1660 Ti **75 °C**
 (closest to its abort), P40 51 °C at a 150 W cap, 2060 45 °C.
-| 31 | poly2 + omega trains at scale (128-key, 16 pairs, d=64) | same results files | **FAILS** together (train acc 0.74 at 40k). **poly2 alone PASSES**: 1.00 train by 1.5k, 58.4 of 64 at 4k (1 seed). omega alone at this spec not yet measured. |
-| 32 | Training escapes the start for every seed | `docs/results/2026-11-16-seeds-and-poly2-at-scale.md` | **FAILS**: 2 of 8 runs (seed 1, both families) never train in 40k (combined collapses to 1 distinct prediction); titans s3 plateaus to ~10k. No test yet; `--seed` sets data and init together. |
+| 31 | poly2 + omega trains at scale (128-key, 16 pairs, d=64) | `docs/results/2026-11-17-seven-seeds-split-omega.md` | **FAILS** at full size and at `poly_rank=16`. Alone each trains: omega 3/3 seeds (2–4k 51.8); full poly2 2/2 (58.1, 48.2; 13 GB); poly2 r16 1/2 (59.5, seed 2 collapses; 1.06 GB). |
+| 32 | Training escapes the start for every seed | `docs/results/2026-11-17-seven-seeds-split-omega.md` | **FAILS** 1 of 7 per family (seed 1). Split: combined fails on data stream 1 alone; titans only with init 1 + data 1. Omega trains init 1 + data 1. No test yet. |
