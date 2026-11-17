@@ -80,7 +80,7 @@ cost) rather than a pass/fail "better". Record both numbers in the ledger.
 - Router LAN (DHCP, 192.168.1.0/24). Hosts are found by MAC, not IP:
   `tools/lan_hosts.py [name]` reads `~/.config/sili_quartz/lan_hosts` (kept out of
   this public repo), checks the ARP table, sweeps the wired /24 if needed.
-  `run_batches.py` resolves `sandbox` this way (override: `SQ_REMOTE`).
+  `run_batches.py` resolves `sandbox` and `ai0` this way: 5 GPU batches.
   `tools/lan_up.sh` is only for a direct cable with no router.
 - GPUs: laptop 1660 Ti 6 GB; sandbox P40 24 GB + 2060; ai0 GTX 1080 8 GB +
   1660 SUPER 6 GB (driver 580). ai0 is the user's ttrpg machine: files in
