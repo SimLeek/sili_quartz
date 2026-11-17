@@ -25,8 +25,8 @@ arXiv:2510.09551 · **[M]** MIRAS ("It's All Connected"), arXiv:2504.13173 ·
 | 11 | Attention alone solves in-context recall | control | [`test_learns_in_context_recall`](../tests/test_mac.py) (integration) | **measured 1.0000 @400 steps** |
 | 12 | Attention alone CANNOT solve beyond-window recall (no leak in the task) | control, [P] | [`test_no_memory_cannot_do_long_gap`](../tests/test_mac.py) (integration) | **measured 0.056 vs baseline 0.071** |
 | 13 | With memory, beyond-window recall is learned | [T] S-NIAH/BABILong, [R] "neural memory is the decisive factor" | [`test_memory_learns_long_gap_recall`](../tests/test_mac.py) (integration) | **measured 0.90 (seed 0, 800 steps), 1.0000 (seed 1, 150 steps)** |
-| 14 | Writes keyed on the previous token store "key→value", not "token→itself" | [P] retention 0.139→0.803 | covered by #13's config (`write_key_from_prev=True`); needs its own ablation test | todo |
-| 15 | Gradient must reach the write side across the gap (tbptt span ≥ gap) or learning stalls ~0.2-0.3 | [P] frozen arm, this repo | covered by #13's config (`tbptt_chunks` ≥ episode); needs its own ablation test | todo |
+| 14 | Writes keyed on the previous token store "key→value", not "token→itself" | [P] retention 0.139→0.803 | [`test_ablation_breaks_long_gap_recall`](../tests/test_mac.py)`[key_on_same_token]` | **pass**: off → 0.383 vs 1.000 with it (base 0.074) |
+| 15 | Gradient must reach the write side across the gap (tbptt span ≥ gap) or learning stalls ~0.2-0.3 | [P] frozen arm, this repo | [`test_ablation_breaks_long_gap_recall`](../tests/test_mac.py)`[detach_every_chunk]` | **pass**: detach every chunk → 0.061 (chance) vs 1.000 |
 | 16 | Larger chunks help; chunking is what makes Titans lose to baselines | [R] | chunk-size sweep | todo |
 | 17 | Persistent (learned, input-independent) tokens: negligible or negative alone | [R] ablation | not implemented; add only with a test showing a gain | todo |
 | 18 | Memory updates alone give no meaningful test-time learning after convergence (slow decay past 50 epochs) | [R] | `examples/capacity_sweep.py` (gap axis) | **measured: mild, log-linear in gap and NOT intrinsic** — well-trained seed loses 0.1–0.9 pt per gap doubling (n=2…16), under-trained seed 3–4 pt. Decay = how well BLANK writes were learned to be null (err→0), i.e. a training-quality effect |
@@ -35,7 +35,7 @@ arXiv:2510.09551 · **[M]** MIRAS ("It's All Connected"), arXiv:2504.13173 ·
 | 21 | First-order updates converge to spurious minima; second-order (Muon-style) helps | [A] | — | out of scope for now |
 | 22 | L2 attentional bias is one choice among several (ℓp, Huber); retention gate is a regularizer choice (L2, KL, elastic) | [M] | the loss and gate should be swappable; test that swapping preserves #1-#5 | todo |
 | 23 | Momentum is what lets deeper (MLP) memories train | [M] | MLP memory + eta sweep | todo (MLP memory not yet in this repo) |
-| 24 | Gates must not be left at random init: alpha≈0.5 halves memory each step → below chance | [P] | init test: default gates are not random | todo |
+| 24 | Gates must not be left at random init: alpha≈0.5 halves memory each step → below chance | [P] | [`test_default_gates_are_not_random`](../tests/test_mac.py); [`test_ablation_breaks_long_gap_recall`](../tests/test_mac.py)`[alpha_half]` | **pass**: defaults alpha=eta=0, not parameters, seed-independent; alpha 0.5 → 0.061 |
 | 25 | Solve RATE across seeds, not a single seed: phase transition timing varies (seed 0: step ~560; seed 1: <150) | [P] reliability, this repo | multi-seed run, report rate | **4/4 seeds > baseline+0.8; 2/4 at 1.0000 by step 150, 2/4 at 0.87-0.90 by 800-1500 (transition timing varies 10x)** |
 
 **Approximate law from the sweep (matrix memory, d_k=64, no forgetting):**

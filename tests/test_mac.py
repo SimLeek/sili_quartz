@@ -214,3 +214,38 @@ def test_family_capacity_probe(family):
     """Records bindings recovered per family (the ledger's B-vs-C question); only requires learning."""
     acc_train, _rec = _family_capacity(family)
     assert acc_train > 0.8, (family, acc_train)
+
+
+# Ablations: each required setting, switched off alone, must break long-gap
+# recall that the verified config (test_memory_learns_long_gap_recall) learns.
+# Measured (seed 0, 800 steps, base 0.074): full config 1.000; same-token keys
+# 0.383, detach every chunk 0.061, alpha 0.5 0.061. Same line as the positive test.
+ABLATION_CEILING = 0.5
+ABLATIONS = {
+    "key_on_same_token": {"write_key_from_prev": False},  # ledger row 14
+    "detach_every_chunk": {"tbptt_chunks": 1},  # row 15: no gradient across the gap
+    "alpha_half": {"alpha": 0.5},  # row 24: random-init-like forget gate
+}
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("name", list(ABLATIONS))
+def test_ablation_breaks_long_gap_recall(name):
+    torch.manual_seed(0)
+    spec = RecallSpec(n_pairs=3, n_queries=3, gap=16)
+    kw = dict(write_key_from_prev=True, tbptt_chunks=8) | ABLATIONS[name]
+    model = TitansMAC(vocab=spec.vocab, d=64, n_heads=4, chunk=8, **kw)
+    acc, base = _train(model, spec, steps=800)
+    print(f"ablation {name}: acc {acc:.3f} base {base:.3f}")
+    assert acc < base + ABLATION_CEILING, (name, acc, base)
+
+
+def test_default_gates_are_not_random():
+    """Row 24: gates come from config, not from the RNG, and do not forget."""
+    mems = []
+    for seed in (0, 1):
+        torch.manual_seed(seed)
+        mems.append(TitansMAC(vocab=32, d=64, n_heads=4, chunk=8).memory)
+    for m in mems:
+        assert m.alpha == 0.0 and m.eta == 0.0, (m.alpha, m.eta)
+    assert not any("alpha" in n or "eta" in n for n, _ in mems[0].named_parameters())

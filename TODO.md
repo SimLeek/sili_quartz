@@ -23,8 +23,7 @@ record under [Done](#done) at the bottom; results live in `docs/results/`.
    trains (3 seeds); together they do not. Try ONE small poly2 (low-rank or on a
    projected key) that fixes the 13 GB and the combination; if that needs a pile
    of extra machinery, **drop poly2** (user, 2026-11-16).
-3. **Ablation tests** for the two required settings (ledger rows 14/15) and the
-   gates-not-random-at-init test (row 24).
+3. **Ablation tests** (rows 14/15/24) — Done → [details](#done-1a3)
 4. **Seed-1 failure** (row 32): seed split says combined fails on *data stream 1*
    (init 1 trains). Hypothesis (user): early training + Adam without stochastic
    annealing; industry would discard such runs, sili may recover them. A hard
@@ -145,3 +144,15 @@ Result: **B cannot bind; C and B+C are the path.** Ledger rows 18/19, 29;
 - Seed 1 never trains for either family (combined collapses to a constant
   predictor; titans creeps to 0.07 train acc). titans s3 plateaus until ~10k.
   Spread is *whether/when training escapes the start* → ledger row 32, plan 1a.4.
+
+<a id="done-1a3"></a>
+## 1a.3 Ablation tests for the required settings (PR #3)
+`tests/test_mac.py::test_ablation_breaks_long_gap_recall` switches one setting off
+in the verified long-gap config (gap 16, 3 pairs, 800 steps, seed 0, base 0.074;
+full config 1.000) and requires accuracy below base + 0.5, the same line the
+positive test must clear:
+- previous-token keys off (row 14): 0.383 — partial, still far below 1.000.
+- detach every chunk, so no gradient across the gap (row 15): 0.061, chance.
+- alpha 0.5, a random-init-like forget gate (row 24): 0.061, chance.
+`test_default_gates_are_not_random` (row 24, unit): defaults alpha = eta = 0,
+not learnable parameters, identical across seeds.
