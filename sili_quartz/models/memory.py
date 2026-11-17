@@ -7,7 +7,8 @@ with the two ATLAS switches (arXiv:2505.23735) that address its measured limits.
     M_t = (1 - alpha_t) M_{t-1} + S_t                              (13)
     y_t = M phi(q_t)                                               (15)
 
-`features`: "identity" is Titans. "poly2" maps keys to [k ; upper(k k^T)],
+`features`: "identity" is Titans. "poly2" maps keys to [k ; upper(k k^T)]
+(`poly_rank` r: [k ; upper((Pk)(Pk)^T)] with a learned d->r projection P),
 raising the number of independently storable keys from O(d) to O(d^2)
 (ATLAS Prop. 1; measured here: a plain matrix saturates at ~d/4 bindings).
 
@@ -71,6 +72,7 @@ class TitansMemory(nn.Module):
         theta_scale: float = 1.0,
         gates: str = "const",
         features: str = "identity",
+        poly_rank: int | None = None,
         window: int = 1,
         inner_steps: int = 1,
         window_decay: float = 1.0,
@@ -87,7 +89,8 @@ class TitansMemory(nn.Module):
             raise ValueError("window and inner_steps must be >= 1")
         d_mem = d_mem or d_in
         self.d_in, self.d_mem = d_in, d_mem
-        self.d_feat = d_mem if features == "identity" else d_mem + d_mem * (d_mem + 1) // 2
+        r = poly_rank or d_mem
+        self.d_feat = d_mem if features == "identity" else d_mem + r * (r + 1) // 2
         self.alpha, self.eta, self.theta_scale = alpha, eta, theta_scale
         self.gates, self.features = gates, features
         self.window, self.inner_steps, self.window_decay = window, inner_steps, window_decay
@@ -95,9 +98,16 @@ class TitansMemory(nn.Module):
         self.W_K = nn.Linear(d_in, d_mem, bias=False)
         self.W_V = nn.Linear(d_in, d_mem, bias=False)
         self.W_Q = nn.Linear(d_in, d_mem, bias=False)
+        # poly_rank r < d_mem: quadratic terms of a learned r-dim projection only
+        self.P = nn.Linear(d_mem, r, bias=False) if features == "poly2" and r < d_mem else None
 
     def phi(self, k: Tensor) -> Tensor:
-        return k if self.features == "identity" else poly2(k)
+        if self.features == "identity":
+            return k
+        if self.P is None:
+            return poly2(k)
+        quad = poly2(self.P(k))[..., self.P.out_features :]
+        return torch.cat([k, quad], dim=-1)
 
     def init_state(self, batch: int, device=None, dtype=None) -> MemoryState:
         z = torch.zeros(batch, self.d_mem, self.d_feat, device=device, dtype=dtype)

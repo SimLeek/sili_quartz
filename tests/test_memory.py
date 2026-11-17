@@ -112,6 +112,9 @@ def test_poly2_feature_dimension():
     assert poly2(k).shape == (2, 3, 8 + 36)
     m = TitansMemory(8, features="poly2")
     assert m.init_state(1).M.shape == (1, 8, 44)
+    r = TitansMemory(8, features="poly2", poly_rank=3)  # [k ; upper((Pk)(Pk)^T)]
+    assert r.init_state(1).M.shape == (1, 8, 8 + 6)
+    assert r.phi(torch.randn(2, 8)).shape == (2, 14)
 
 
 def test_poly2_one_shot_store():
@@ -176,3 +179,18 @@ def test_poly2_raises_independent_key_capacity():
         got, want = _store_exact(m, x)
         errs[feat] = ((got - want).norm() / want.norm()).item()
     assert errs["poly2"] < 0.1 < errs["identity"], errs
+
+
+def test_poly_rank_one_shot_store_and_gradcheck():
+    m = _mem(d=4, features="poly2", poly_rank=2, window=2)
+    got, want = _store_exact(m, torch.randn(3, 1, 4, dtype=torch.double))
+    assert torch.allclose(got, want, atol=1e-9)
+    x = torch.randn(1, 3, 4, dtype=torch.double, requires_grad=True)
+    q = torch.randn(1, 4, dtype=torch.double, requires_grad=True)
+
+    def f(x, q):
+        return m.read(q, m.write(x, m.init_state(1, dtype=torch.double)))
+
+    assert torch.autograd.gradcheck(f, (x, q), eps=1e-6, atol=1e-5)
+    f(x, q).sum().backward()
+    assert m.P.weight.grad is not None and m.P.weight.grad.abs().sum() > 0
