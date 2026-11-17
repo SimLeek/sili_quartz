@@ -56,7 +56,24 @@ Identity-key titans seeds that trained, same spec: 4k 42.8–50.9, 5–10k 45.6�
 Omega trains on all three seeds (including seed 1, whose data stream is the same)
 and is ahead of every identity-key seed at 5–10k.
 
-## poly2
+## Combined + omega (`--family combined --window 8`), 10k steps, 3 seeds (ai0)
+
+| seed | 0.99 at | 2–4k rec | 5–10k rec | plain combined on this seed |
+|---|---|---|---|---|
+| 0 | 500 | 51.8 | 53.9 | trains (500) |
+| 1 | 1 250 | 50.0 | 52.4 | **collapses** |
+| 2 | **never** (acc 0.09 at 10k) | 1.4 | 1.0 | trains (1 000) |
+
+- Omega rescues combined on data stream 1, and combined + omega stalls on seed 2,
+  which plain combined and titans + omega both train. Seed 2's stall is the
+  acc ≈ 0.09 plateau (125–128 distinct predictions), not a constant-predictor
+  collapse; titans s3 sat on the same plateau until ~10k.
+- Where it trains, combined + omega matches titans + omega (5–10k 52.4–53.9 vs
+  53.5–54.0). 1080 peak 74 °C (shared with the user's game), 1660 SUPER 68 °C.
+- Every arm so far has a seed that fails to start, and *which* seed moves with
+  the configuration: a start-up property of the setup under Adam, not one bad
+  data stream.
+
 
 | arm | seed | 0.99 at | rec at 4k | GPU memory |
 |---|---|---|---|---|
