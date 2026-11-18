@@ -18,10 +18,10 @@ record under [Done](#done) at the bottom; results live in `docs/results/`.
 
 ## 1a. PLAN (user, 2026-11-16), in order
 1. **Seeds** — Done → [details](#done-1a1). Seed 1 never trains for either
-   family (ledger row 32).
+   family (JOURNAL row 32).
 2. **poly2** — Dropped (user, 2026-11-17) → [details](#done-1a2)
 3. **Ablation tests** (rows 14/15/24) — Done → [details](#done-1a3)
-4. **Seed-1 failure** (row 32): combined fails on *data stream 1* alone; titans
+4. **Seed-1 failure** (JOURNAL row 32): combined fails on *data stream 1* alone; titans
    only with init 1 + data 1; poly2 r16 collapses on seed 2. Hypothesis (user): early training + Adam without stochastic
    annealing; industry would discard such runs, sili may recover them. A hard
    data stream is an ASSET: keep it as a fixture and re-run it under the sili
@@ -52,6 +52,14 @@ cost) rather than a pass/fail "better". Record both numbers in the ledger.
   the BPTT window. Test: long-gap accuracy vs steps AND in-window accuracy vs
   steps, side by side with full in-episode BPTT; the cost is the right-shift of
   the in-window curve.
+  - **Torch first pass (branch research/e-bptt-fake-backprop, 2026-11-17):**
+    `models/ebptt.py`. Overriding a saved input during backward works
+    (`saved_tensors_hooks`; tested on starmap / blob-walk z=t / noise inputs).
+    On row 15 with the state detached every chunk: credit from a plain sum of
+    remembered inputs 0.268, buffer 0.212. With the V-side Jacobian carried
+    (I − c k kᵀ): trace 0.969, buffer-16 0.891 (pass). W_V-only credit 0.061.
+    Open: the user's own spoofing variants (input / grad_input / grad_output
+    substitution without a Jacobian), and the cost axis (in-window curve).
 - **Adam → sili importance (single-state optimizer).** Expected: worse
   accuracy/steps until the mean/variance control and eigenvalue stochastic
   annealing land (those may recover it). The benefit that is certain is RAM:
@@ -114,7 +122,7 @@ Result: **B cannot bind; C and B+C are the path.** Ledger rows 18/19, 29;
   (`tests/test_mac.py::test_family_capacity_probe`).
 
 <a id="done-1b"></a>
-## 1b. Long-run B+C vs C (PR #3) — combined leads (ledger row 30)
+## 1b. Long-run B+C vs C (PR #3) — combined leads (JOURNAL row 30)
 - 230-min runs, 32-pair probe: titans 30.2 vs combined 30.7 of 32 (windowed).
   [docs/results/2026-11-15-long-family-runs.md](docs/results/2026-11-15-long-family-runs.md)
 - Equal 40k steps, 128-key vocab, train 16 pairs, stress 64 pairs: 30–40k
@@ -131,7 +139,7 @@ Result: **B cannot bind; C and B+C are the path.** Ledger rows 18/19, 29;
   Gram (differentiable). Ledger row 1 re-derived as "window stores exactly when
   keys are independent" before switching; that test doubles as the capacity probe.
 - At d_k=64, 32-binding probe: poly2 saturated 32/32; omega alone 28.3 vs base ~19.
-- At scale (128-key, 16 pairs) poly2 + omega **fails to train** (ledger row 31,
+- At scale (128-key, 16 pairs) poly2 + omega **fails to train** (JOURNAL row 31,
   train acc 0.74 at 40k) — open as 1a.2.
 
 <a id="done-1a1"></a>
@@ -143,7 +151,7 @@ Result: **B cannot bind; C and B+C are the path.** Ledger rows 18/19, 29;
   64; worst eval 43.4 vs 53.7. Combined ≥ titans for every trained seed.
 - Seed 1 never trains for either family (combined collapses to a constant
   predictor; titans creeps to 0.07 train acc). titans s3 plateaus until ~10k.
-  Spread is *whether/when training escapes the start* → ledger row 32, plan 1a.4.
+  Spread is *whether/when training escapes the start* → JOURNAL row 32, plan 1a.4.
 
 <a id="done-1a3"></a>
 ## 1a.3 Ablation tests for the required settings (PR #3)

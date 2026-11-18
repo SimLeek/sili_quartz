@@ -119,4 +119,5 @@ class TitansMAC(nn.Module):
         return mem
 
     def _detach(self, state):
-        return state.detach()
+        # memory.with_credit detaches and, under e-BPTT, routes dL/dM into the write projections
+        return self.memory.with_credit(state)

@@ -26,11 +26,11 @@ arXiv:2510.09551 · **[M]** MIRAS ("It's All Connected"), arXiv:2504.13173 ·
 | 12 | Attention alone CANNOT solve beyond-window recall (no leak in the task) | control, [P] | [`test_no_memory_cannot_do_long_gap`](../tests/test_mac.py) (integration) | **measured 0.056 vs baseline 0.071** |
 | 13 | With memory, beyond-window recall is learned | [T] S-NIAH/BABILong, [R] "neural memory is the decisive factor" | [`test_memory_learns_long_gap_recall`](../tests/test_mac.py) (integration) | **measured 0.90 (seed 0, 800 steps), 1.0000 (seed 1, 150 steps)** |
 | 14 | Writes keyed on the previous token store "key→value", not "token→itself" | [P] retention 0.139→0.803 | [`test_ablation_breaks_long_gap_recall`](../tests/test_mac.py)`[key_on_same_token]` | **pass**: off → 0.383 vs 1.000 with it (base 0.074) |
-| 15 | Gradient must reach the write side across the gap (tbptt span ≥ gap) or learning stalls ~0.2-0.3 | [P] frozen arm, this repo | [`test_ablation_breaks_long_gap_recall`](../tests/test_mac.py)`[detach_every_chunk]` | **pass**: detach every chunk → 0.061 (chance) vs 1.000 |
+| 15 | Gradient must reach the write side across the gap (tbptt span ≥ gap) or learning stalls ~0.2-0.3 | [P] frozen arm, this repo; e-prop (Bellec et al. 2020) for the fix | [`test_ablation_breaks_long_gap_recall`](../tests/test_mac.py)`[detach_every_chunk]`; [`test_ebptt_learns_long_gap_with_state_detached_every_chunk`](../tests/test_ebptt.py) | **pass**: detach every chunk → 0.061 (chance) vs 1.000. **With the state still detached every chunk, e-BPTT credit (models/ebptt.py) recovers it: trace 0.969, buffer of 16 writes 0.891.** Needs the V-side Jacobian carried (plain sum 0.268) and the K-side credit (V only 0.061). |
 | 16 | Larger chunks help; chunking is what makes Titans lose to baselines | [R] | chunk-size sweep | todo |
 | 17 | Persistent (learned, input-independent) tokens: negligible or negative alone | [R] ablation | not implemented; add only with a test showing a gain | todo |
 | 18 | Memory updates alone give no meaningful test-time learning after convergence (slow decay past 50 epochs) | [R] | `examples/capacity_sweep.py` (gap axis) | **measured: mild, log-linear in gap and NOT intrinsic** — well-trained seed loses 0.1–0.9 pt per gap doubling (n=2…16), under-trained seed 3–4 pt. Decay = how well BLANK writes were learned to be null (err→0), i.e. a training-quality effect |
-| 19 | Matrix memory holds only O(d_k) linearly independent keys | [A] Prop. 1 | `examples/capacity_sweep.py`; [`test_family_capacity_probe`](../tests/test_mac.py) | **measured: recovered bindings saturate at C≈16 ≈ d_k/4**. poly2 raised it at d=64 (32/32 of 32) but was **dropped** (row 31); the poly2 tests went with it. |
+| 19 | Matrix memory holds only O(d_k) linearly independent keys | [A] Prop. 1 | `examples/capacity_sweep.py`; [`test_family_capacity_probe`](../tests/test_mac.py) | **measured: recovered bindings saturate at C≈16 ≈ d_k/4**. poly2 raised it at d=64 (32/32 of 32) but was **dropped** ([JOURNAL](JOURNAL.md)); the poly2 tests went with it. |
 | 20 | Single-token online updates memorize tokens, not context; a sliding-window objective (Omega rule) fixes it | [A] | [`test_omega_keeps_capacity`](../tests/test_mac.py), [`test_memory_learns_long_gap_recall[omega]`](../tests/test_mac.py) | window=chunk implemented (1/λ_max-scaled joint step). **Not merely neutral: omega alone recovers 28.3/32 bindings vs 19.2 for the per-token rule (1.5×)** — fitting the window jointly reduces intra-window interference. Context-vs-token memorization on distractor tasks still untested |
 | 21 | First-order updates converge to spurious minima; second-order (Muon-style) helps | [A] | — | out of scope for now |
 | 22 | L2 attentional bias is one choice among several (ℓp, Huber); retention gate is a regularizer choice (L2, KL, elastic) | [M] | the loss and gate should be swappable; test that swapping preserves #1-#5 | todo |
@@ -54,8 +54,9 @@ work) and #19 (capacity cliff), since the kernel port must preserve them.
 
 | # | property | test | status |
 |---|---|---|---|
+Rows 27 and 30–32 failed or did not separate; they moved to [JOURNAL.md](JOURNAL.md).
+
 | 26 | A (attention only) cannot do beyond-window recall | [`test_no_memory_cannot_do_long_gap`](../tests/test_mac.py) | measured 0.056 vs baseline 0.071 |
-| 27 | B (RMT) learns beyond-window recall through passed tokens alone | [`test_family_learns_long_gap_recall[rmt]`](../tests/test_mac.py) | **FAILS, strict-xfail. Measured 0.33±0.01 for m=4 and m=16, with and without a 0→4→8→16 gap curriculum (4 runs). Per-pair accuracy uniform across write order (0.31–0.36): it carries the SET of written values (1/3 ≈ guessing among them) but never binds key→value.** |
 | 28 | B+C (Combined) learns it | [`test_family_learns_long_gap_recall[combined]`](../tests/test_mac.py) | **passes** (800 steps) |
 | 29 | Bindings recovered per family at 32 live, d=64 | [`test_family_capacity_probe`](../tests/test_mac.py) | **rmt 1.5 (train acc 0.15 — cannot learn 8 pairs), titans 19.4, combined 23.7.** B+C > C by ~4: the state tokens add capacity when an associative store exists, even though alone they cannot bind. The prediction "B ∝ m·d" is FALSIFIED at this scale — B's limit is binding, not slots. |
 
@@ -67,11 +68,8 @@ it is the reason the sili substrate (memory as weights) is the bet. Open: does
 B bind with more depth, a cross-attention write head, or m·d ≫ bindings? Not
 pursued now; C and B+C are the path.
 
-| 30 | B+C beats C under long training | `docs/results/2026-11-17-omega-forty-k-seeds.md` | **not separated**: 7 seeds × 4 arms. Without omega combined is narrowly ahead (55.9 ± 1.5 vs 55.2 ± 1.8, 4 of 6 paired). With omega titans is ahead on the mean (56.9 ± 2.0, 7/7 train vs 56.4 ± 2.1, 6/7), combined on worst case (window min 49.7 vs 44.3). All three kept for the sili port. |
 
 **Long-run method note.** Equal wall-clock gave unequal steps (titans 45k on
 the 1660 Ti, combined 81k on the 2060, rmt 450k on the P40): compare by step,
 or budget by steps. Peak temperatures under the guard: 1660 Ti **75 °C**
 (closest to its abort), P40 51 °C at a 150 W cap, 2060 45 °C.
-| 31 | poly2 + omega trains at scale (128-key, 16 pairs, d=64) | `docs/results/2026-11-17-seven-seeds-split-omega.md` | **FAILS** at full size and at `poly_rank=16`. Alone each trains: omega 3/3 seeds (2–4k 51.8); full poly2 2/2 (58.1, 48.2; 13 GB); poly2 r16 1/2 (59.5, seed 2 collapses; 1.06 GB). **poly2 dropped** (user, 2026-11-17). |
-| 32 | Training escapes the start for every seed | `docs/results/2026-11-17-omega-forty-k-seeds.md` | **FAILS** in 3 of 4 arms. Titans + omega trains 7/7. The failing seed moves with the config (titans/combined s1, combined + omega s5) and with the GPU: combined + omega s2 stalled on ai0 but trained at 4.5k on the 2060. No test yet. |
