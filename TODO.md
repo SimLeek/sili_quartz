@@ -76,6 +76,41 @@ cost) rather than a pass/fail "better". Record both numbers in the ledger.
   memory per parameter; a regression in steps-to-threshold is EXPECTED and must
   be quantified, not hidden. Adam remains the diagnostic reference.
 
+## 2c. NEXT: does energy RL prevent model collapse? (user, 2026-11-18)
+Model collapse: a language model trained on another LM's samples, chained
+generation after generation, loses rare words first (the tails vanish) and
+eventually repeats forever (Shumailov et al., Nature 2024, "AI models collapse
+when trained on recursively generated data"). Raising sampling temperature does
+not fix it: it keeps the tails but loses sentence structure. The claim to test:
+even a small dose of neuron energy RL in the model that *generates* the data
+(per-neuron temperature, not token temperature) stops the collapse.
+
+Not stochastic annealing: that rescues the optimizer state in self-training.
+Here the next model trains on outputs of a model whose energy RL is active.
+
+1. **Torch energy.** sili's `EnergyDynamics` (sili__new `sili/energy.py`) has
+   no torch equivalent: discrete gating, an abs backward, and a KL aux loss
+   (sili__new `tests/integration/test_transformer.py:8-9`). Port it as a
+   custom `autograd.Function` + module, with unit tests that it matches
+   sili's forward/backward on a fixed input. (User mentioned a torch version
+   exists; not found by grep, so check first.)
+2. **The chain.** Generation 0 = "some model": a pretrained LM, kept outside
+   the codebase (MiniCPM5-1B-Base is at `~/claude_code/MiniCPM5-1B-Base`; any
+   small causal LM works). Generation i+1 is trained (LM loss, partly mixed
+   with the energy RL aux loss) on text sampled from generation i. Fixed real
+   held-out text for evaluation.
+3. **Collapse metrics, per generation:** frequency of rare tokens (mass in the
+   bottom tail of the gen-0 unigram distribution), distinct-n / unique n-gram
+   ratio, longest repeated span / repetition rate, perplexity on the real
+   held-out text, a structure check (e.g. gen-0 model's perplexity on the
+   samples).
+4. **Arms:** plain sampling at T = 1 (expected: collapse by generation n);
+   temperature sweep (expected: tails kept, structure lost); energy RL dose
+   sweep from tiny (1e-6, expected useless) up, to find where the line is.
+   Pass = no collapse through n + k generations (k a fixed budget) at some
+   dose, with structure kept. Seeds = same program run N times.
+5. Results to `docs/results/`, ledger row for the property.
+
 ## 3. Training-regime constraints (user, 2026-11-15)
 - **Sleep window (≤ 8 h/day, once a day) = annealing + health passes that
   improve the optimizer state.** Sparse backprop runs during BOTH wake and
