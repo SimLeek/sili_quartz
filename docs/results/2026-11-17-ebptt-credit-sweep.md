@@ -101,3 +101,23 @@ a smaller dense matmul: credit backward 2p·d³ per chunk instead of 2d³. Raw C
   (sbw_grad_p25 s1 never leaves chance; sbw_gn_p25 s0 reaches 0.54, then falls
   to chance after step 1500; sbw_gn_p125 s0 peaks at 0.35, ends at 0.09).
 - n = 3 per arm. GPU peaks: laptop 66 °C, 1080 55, 2060 52, 1660 SUPER 51.
+
+## More seeds: noise-scored sparse credit vs the dense carry
+
+Same task and 3000 steps. Seeds 0–2 from the table above, the rest new. Raw
+CSVs: `runs/ebptt_sweep/seeds/`.
+
+| arm | credit MACs / token | seeds | acc at 3000, per seed | ≥ 0.95 at 3000 | ever ≥ 0.95 | median first ≥ 0.95 |
+|---|---|---|---|---|---|---|
+| dense carry | ≈ 66k | 0–7 | .990 .986 .974 .973 .938 .999 **.059** .979 | 6/8 | 7/8 | 1250 |
+| noise, p = 0.25 | ≈ 16k | 0–10 | .995 .970 .973 .992 **.065** .996 .975 .995 .938 .979 .970 | 9/11 | 9/11 | 1750 |
+| noise, p = 0.125 | ≈ 8k | 0–7 | .957 .641 .984 .996 .376 .806 .367 .996 | 4/8 | 4/8 | 1125 |
+
+- Noise at p = 0.25 and the dense carry are not separated: 9/11 vs 6/8 runs end
+  ≥ 0.95. Each arm has one run that never leaves chance from the first eval
+  (dense s6, noise s4), the start-up failure seen in every arm of the long runs
+  (JOURNAL row 32). The other short-of-0.95 run in each arm is still rising at
+  3000 (noise s8: 0.42 → 0.94; dense s4 0.938).
+- At p = 0.125, 4 of 8 reach ≥ 0.95. Of the rest, two sit at 0.37 for all 3000
+  steps and two are still rising (0.64, 0.81).
+- GPU peaks: 1080 57 °C, 1660 SUPER 53, 2060 52, P40 43 (200 W cap).
