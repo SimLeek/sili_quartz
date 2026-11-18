@@ -25,7 +25,7 @@
 #   --power-limit W    cap board power before running; restored on exit.
 #                      Needs root. P40 accepts 125-250W, default 250W.
 #   --poll S           seconds between samples (default 5)
-#   --log FILE         append CSV: iso_time,temp_c,power_w,util_pct
+#   --log FILE         append CSV: iso_time,temp_c,power_w,util_pct,fan_pct
 #   --watch            monitor only, no workload (Ctrl-C to stop)
 #
 # Exit: the command's own status, or 2 if aborted on temperature,
@@ -80,7 +80,7 @@ if [[ -n "$GPU" && $GPU_IS_INDEX -eq 0 ]]; then
 fi
 
 read_temp() { nvidia-smi -i "$GPU" --query-gpu=temperature.gpu --format=csv,noheader 2>/dev/null | tr -dc '0-9'; }
-read_row()  { nvidia-smi -i "$GPU" --query-gpu=temperature.gpu,power.draw,utilization.gpu \
+read_row()  { nvidia-smi -i "$GPU" --query-gpu=temperature.gpu,power.draw,utilization.gpu,fan.speed \
                 --format=csv,noheader,nounits 2>/dev/null | tr -d ' '; }
 
 NAME="$(nvidia-smi -i "$GPU" --query-gpu=name --format=csv,noheader 2>/dev/null)"
@@ -114,7 +114,7 @@ if [[ -n "$PLIMIT" ]]; then
     || { echo "ERROR: could not set power limit to ${PLIMIT}W" >&2; exit 1; }
 fi
 
-[[ -n "$LOG" ]] && { [[ -s "$LOG" ]] || echo "iso_time,temp_c,power_w,util_pct" >> "$LOG"; }
+[[ -n "$LOG" ]] && { [[ -s "$LOG" ]] || echo "iso_time,temp_c,power_w,util_pct,fan_pct" >> "$LOG"; }
 
 PEAK="$T0"
 sample() {

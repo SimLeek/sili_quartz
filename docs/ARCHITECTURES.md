@@ -74,17 +74,20 @@ Three layers, as you proposed, and they map onto the families:
 3. **memory as weights with every ATLAS switch** — `TitansMemory` grows
    four options, each independently testable against the ledger:
    `loss={l2,lp,huber}`, `retention={l2,lq,kl}`, `optimizer={gd,momentum,muon}`,
-   `window=c` (Omega; c=1 is Titans), `features={identity,poly_p}`.
+   `window=c` (Omega; c=1 is Titans), `features={identity,poly_p}` (poly2 tried
+   and dropped, see PROPERTIES row 31).
 
-Two of those earn their place first, for the game/programming-agent goal:
+Two of those were tried first, for the game/programming-agent goal:
 
 - **Omega window (c = chunk).** One gradient over all (k_i, v_i) of the
   chunk instead of a per-token loop. Memorizes the chunk as a pattern, not
   as 8 unrelated tokens; and it removes the sequential loop, which is also
   what makes the CUDA port a batched matmul instead of a scan.
-- **Polynomial features on keys.** Capacity is the cliff ATLAS proved
-  (O(d_k) pairs for a matrix memory); a game state has far more than d_k
-  things worth binding.
+- **Polynomial features on keys** — tried and dropped. Capacity is the cliff
+  ATLAS proved (O(d_k) pairs for a matrix memory), and poly2 did raise it at
+  d=64, but with Omega it stalls at scale (full and rank 16) and rank 16 alone
+  fails to start on some seeds. Capacity has to come from elsewhere (d_k, MLP
+  memory, B+C).
 
 Muon and the alternative losses go in after, each behind a test from
 `PROPERTIES.md`, because the ledger's rows 1–5 must keep holding for

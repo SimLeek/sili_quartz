@@ -1,20 +1,21 @@
 """Titans neural long-term memory (arXiv:2501.00663 §3.1), matrix-valued, batched,
-with the two ATLAS switches (arXiv:2505.23735) that address its measured limits.
+with ATLAS's Omega window (arXiv:2505.23735).
 
     k_t = x_t W_K,  v_t = x_t W_V,  q_t = x_t W_Q                 (11, 14)
-    l(M; x_t)  = || M phi(k_t) - v_t ||^2                          (12)
+    l(M; x_t)  = || M k_t - v_t ||^2                               (12)
     S_t = eta_t S_{t-1} - theta_t grad_M l                         (10)
     M_t = (1 - alpha_t) M_{t-1} + S_t                              (13)
-    y_t = M phi(q_t)                                               (15)
+    y_t = M q_t                                                    (15)
 
-`features`: "identity" is Titans. "poly2" maps keys to [k ; upper(k k^T)],
-raising the number of independently storable keys from O(d) to O(d^2)
-(ATLAS Prop. 1; measured here: a plain matrix saturates at ~d/4 bindings).
+ATLAS's polynomial key features were
+tried and dropped: they stall together with the Omega window at scale, and the
+low-rank variant fails to start on some seeds
+(docs/results/2026-11-17-seven-seeds-split-omega.md).
 
 `window`: tokens per inner step. 1 is Titans' online rule. c > 1 is the Omega
 rule: one step on the joint loss of the last c pairs, so the memory fits the
 context rather than each token in turn. The step is normalized per key
-(sum_i gamma_i (M phi_i - v_i) phi_i^T / ||phi_i||^2, theta = 0.5), which
+(sum_i gamma_i (M k_i - v_i) k_i^T / ||k_i||^2, theta = 0.5), which
 stores a window of orthogonal keys exactly in one step and reduces to the
 0.5/||k||^2 delta rule at c = 1. `inner_steps` iterates toward the
 least-squares solution for correlated keys.
@@ -35,8 +36,8 @@ from torch import Tensor, nn
 
 @dataclass
 class MemoryState:
-    M: Tensor  # [B, d_mem, d_feat]
-    S: Tensor  # [B, d_mem, d_feat] momentum / surprise trace
+    M: Tensor  # [B, d_mem, d_mem]
+    S: Tensor  # [B, d_mem, d_mem] momentum / surprise trace
     lag: Tensor | None = None  # [B] EMA of retrieval lag (kernel_matched only)
     keys: Tensor | None = None  # [B, K, d_mem] recent raw write keys, for lag estimation
     ticks: Tensor | None = None  # [B, K]
@@ -53,13 +54,6 @@ class MemoryState:
         )
 
 
-def poly2(k: Tensor) -> Tensor:
-    """[..., d] -> [..., d + d(d+1)/2]: k followed by the upper triangle of k k^T."""
-    d = k.shape[-1]
-    i, j = torch.triu_indices(d, d, device=k.device)
-    return torch.cat([k, k[..., i] * k[..., j]], dim=-1)
-
-
 class TitansMemory(nn.Module):
     def __init__(
         self,
@@ -70,7 +64,6 @@ class TitansMemory(nn.Module):
         eta: float = 0.0,
         theta_scale: float = 1.0,
         gates: str = "const",
-        features: str = "identity",
         window: int = 1,
         inner_steps: int = 1,
         window_decay: float = 1.0,
@@ -81,26 +74,20 @@ class TitansMemory(nn.Module):
         super().__init__()
         if gates not in ("const", "kernel_matched"):
             raise ValueError(f"gates must be 'const' or 'kernel_matched', got {gates!r}")
-        if features not in ("identity", "poly2"):
-            raise ValueError(f"features must be 'identity' or 'poly2', got {features!r}")
         if window < 1 or inner_steps < 1:
             raise ValueError("window and inner_steps must be >= 1")
         d_mem = d_mem or d_in
         self.d_in, self.d_mem = d_in, d_mem
-        self.d_feat = d_mem if features == "identity" else d_mem + d_mem * (d_mem + 1) // 2
         self.alpha, self.eta, self.theta_scale = alpha, eta, theta_scale
-        self.gates, self.features = gates, features
+        self.gates = gates
         self.window, self.inner_steps, self.window_decay = window, inner_steps, window_decay
         self.lag_beta, self.lag_buffer, self.eps = lag_beta, lag_buffer, eps
         self.W_K = nn.Linear(d_in, d_mem, bias=False)
         self.W_V = nn.Linear(d_in, d_mem, bias=False)
         self.W_Q = nn.Linear(d_in, d_mem, bias=False)
 
-    def phi(self, k: Tensor) -> Tensor:
-        return k if self.features == "identity" else poly2(k)
-
     def init_state(self, batch: int, device=None, dtype=None) -> MemoryState:
-        z = torch.zeros(batch, self.d_mem, self.d_feat, device=device, dtype=dtype)
+        z = torch.zeros(batch, self.d_mem, self.d_mem, device=device, dtype=dtype)
         st = MemoryState(z, z.clone())
         if self.gates == "kernel_matched":
             st.lag = torch.ones(batch, device=device, dtype=dtype)
@@ -117,11 +104,11 @@ class TitansMemory(nn.Module):
         return 1.0 / lag, eta, self.theta_scale * (1.0 - eta)
 
     def read(self, x: Tensor, state: MemoryState) -> Tensor:
-        """y = M phi(q) for x of shape [B, ..., d_in]; eq 15. Updates the lag estimate."""
+        """y = M q for x of shape [B, ..., d_in]; eq 15. Updates the lag estimate."""
         q = self.W_Q(x)
         if self.gates == "kernel_matched":
             self._note_read(q, state)
-        return torch.einsum("bij,b...j->b...i", state.M, self.phi(q))
+        return torch.einsum("bij,b...j->b...i", state.M, q)
 
     @torch.no_grad()
     def _note_read(self, q: Tensor, state: MemoryState) -> None:
@@ -148,7 +135,7 @@ class TitansMemory(nn.Module):
         (same shape as x); default is x itself, as in eq 11.
         """
         k_raw = self.W_K(x if k_src is None else k_src)
-        K, V = self.phi(k_raw), self.W_V(x)  # [B, L, d_feat], [B, L, d_mem]
+        K, V = k_raw, self.W_V(x)  # [B, L, d_mem] each
         M, S = state.M, state.S
         alpha, eta, th_mul = self._gates(state)
         L, c = x.shape[1], self.window
@@ -166,7 +153,7 @@ class TitansMemory(nn.Module):
             step = (th_mul / lam).view(-1, 1, 1) if torch.is_tensor(th_mul) else th_mul / lam.view(-1, 1, 1)
             for _ in range(self.inner_steps):
                 err = torch.einsum("bij,bnj->bni", M, Kw) - Vw  # [B, n, d_mem]
-                grad = torch.einsum("bni,bnj->bij", err * w, Kw)  # sum_i w_i err_i phi_i^T
+                grad = torch.einsum("bni,bnj->bij", err * w, Kw)  # sum_i w_i err_i k_i^T
                 S = eta * S - step * grad
                 M = (1.0 - alpha) * M + S
         out = MemoryState(M, S, state.lag, state.keys, state.ticks, state.tick + L)

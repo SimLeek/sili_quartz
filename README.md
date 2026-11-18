@@ -22,7 +22,8 @@ evaluate without retraining): recovered bindings saturate at **≈16 ≈ d_k/4**
 for d_k=64 (acc ≈ 16/n beyond that: 32 pairs → 0.47, 64 → 0.25). Decay with
 gap is mild — under 1 point per gap doubling out to 1024 tokens — and is a
 training-quality effect, not intrinsic. That is ATLAS's O(d_k) cliff seen
-directly, and the reason polynomial key features are next.
+directly. ATLAS's polynomial key features raised it at d=64 but were dropped
+after failing at scale (below); the Omega window stays.
 
 Two settings were necessary and are the defaults: writes keyed on the
 *previous* token's representation (so a pair is stored as key→value), and
@@ -30,16 +31,23 @@ backprop through the memory across the whole episode (`tbptt_chunks`
 spanning the gap). Without either, accuracy stalls around 0.2–0.3.
 
 **Capability matrix, 3 GPUs in parallel** (`tools/run_batches.py`, 2026-11-15):
-all 8 integration tests pass — every switch combination (`base`, `poly`,
-`omega`, `both`) still learns beyond-window recall; `poly2` recovers more
-bindings than the plain matrix at equal d (the new capability); `omega`
-costs none. Magnitudes at d=64, 32 live bindings: base recovers 18–19, **omega 28.3**, **poly2 32/32 (probe saturated)**. Laptop 1660 Ti 138 s, RTX 2060 203 s, Tesla P40 740 s (the
-P40 is launch-latency-bound on tiny steps; give it the big-batch jobs).
+every switch setting still learns beyond-window recall, and omega costs no
+bindings: at d=64, 32 live bindings, base recovers 18–19, **omega 28.3**. The
+P40 is launch-latency-bound on tiny steps; give it the big-batch jobs.
 
 **Family matrix** (same task, d=64, 32 live bindings): transformer fails as required;
 **rmt recovers 1.5** (plateaus at 0.33 beyond-window: carries the set of values, never binds
 key→value — 4 runs, m=4/16, ± curriculum); **titans 19.4**; **combined 23.7**. Details and
 sources in `docs/PROPERTIES.md` rows 26–29.
+
+**Long runs (40k steps, 128-key vocab, 64-binding probe, 7 seeds):** over the 6
+seeds that train, combined recovers 55.9 ± 1.5 and titans 55.2 ± 1.8 of 64 in the
+last 10k steps; combined is higher on 4 of 6 seeds. Seed 1 fails for both
+(combined on its data stream alone). With the omega window titans trains on all
+7 seeds (56.9 ± 2.0) and combined + omega on 6 (56.4 ± 2.1, best worst case);
+no arm is ruled out, and all are being ported to sili. poly2 was dropped: with omega it
+stalls at full size and at rank 16, and rank 16 alone fails to start on 1 of 2
+seeds. `docs/results/` has the tables.
 
 ## Layout
 
@@ -49,7 +57,7 @@ sili_quartz/models/
   rmt.py           B  passed state tokens (RMT)
   titans.py        C  memory as weights (Titans MAC + switches)
   combined.py      B+C (ARMT-style)
-  memory.py        TitansMemory: eqs 10-15, poly2 keys, Omega window, Law-5 gates
+  memory.py        TitansMemory: eqs 10-15, Omega window, Law-5 gates
   common.py        shared Block + one segment mask
   *_sili.py        (planned) the same models on sili kernels, same tests
 sili_quartz/tasks/recall.py    key-value recall with a gap; honest baseline; leak check

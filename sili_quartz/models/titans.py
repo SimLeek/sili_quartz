@@ -15,7 +15,7 @@ token's representation instead, so a (key, value) pair is stored as
 Measured necessary for beyond-window recall, as is `tbptt_chunks` spanning the
 gap; both are defaults.
 
-Memory switches (poly2 features, Omega window, gates) are `TitansMemory`'s.
+Memory switches (Omega window, gates) are `TitansMemory`'s.
 """
 
 from __future__ import annotations

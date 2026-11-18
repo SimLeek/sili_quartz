@@ -51,14 +51,16 @@ def main() -> None:
     p.add_argument("--stress-pairs", type=int, default=0, help="also eval at this many pairs (0 = off)")
     p.add_argument("--stress-gap", type=int, default=0)
     p.add_argument("--log", default="", help="CSV path for eval rows")
+    p.add_argument("--window", type=int, default=1, help="titans/combined Omega window (1 = per-token)")
     p.add_argument("--no-key-from-prev", action="store_true", help="key writes on the same token (weaker)")
     p.add_argument("--tbptt", type=int, default=64, help="chunks between memory-state detaches")
-    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--seed", type=int, default=0, help="init seed (and data seed unless --data-seed)")
+    p.add_argument("--data-seed", type=int, default=None, help="training-stream seed; default = --seed")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     a = p.parse_args()
 
     torch.manual_seed(a.seed)
-    rng = np.random.default_rng(a.seed)
+    rng = np.random.default_rng(a.seed if a.data_seed is None else a.data_seed)
     spec = RecallSpec(n_keys=a.keys, n_values=a.values, n_pairs=a.pairs, n_queries=a.pairs, gap=a.gap)
     if a.gap > 0:
         assert_gap_hides_pairs(spec, a.chunk)
@@ -70,6 +72,7 @@ def main() -> None:
             alpha=a.alpha,
             write_key_from_prev=not a.no_key_from_prev,
             tbptt_chunks=a.tbptt,
+            window=a.window,
         )
     elif a.family == "rmt":
         kw.update(tbptt_chunks=a.tbptt, mem_tokens=a.mem_tokens)
