@@ -72,11 +72,21 @@ class TitansMAC(nn.Module):
 
     def forward(self, tokens: Tensor, state: MemoryState | None = None) -> tuple[Tensor, MemoryState]:
         """tokens [B, T] -> logits [B, T, vocab]. T is processed in chunks; the last may be short."""
+        out = []
+        for logits, st in self.stream(tokens, state):  # noqa: B007 (last state is returned)
+            out.append(logits)
+        return torch.cat(out, dim=1), st
+
+    def stream(self, tokens: Tensor, state=None):
+        """Yield (logits [B, L, vocab], state) one chunk at a time. At each
+        tbptt detach nothing with a graph crosses into the next chunk, so with
+        tbptt_chunks=1 the caller can backprop each chunk's loss and free its
+        graph before the next chunk runs (ebptt.stream_backward)."""
         B, T = tokens.shape
         dev = tokens.device
         if state is None:
             state = self.init_state(B, dev)
-        out, prev_h, n_chunks = [], None, 0
+        prev_h, n_chunks = None, 0
         for s in range(0, T, self.chunk):
             ids = tokens[:, s : s + self.chunk]
             L = ids.shape[1]
@@ -108,8 +118,8 @@ class TitansMAC(nn.Module):
             n_chunks += 1
             if n_chunks % self.tbptt_chunks == 0:
                 state = self._detach(state)
-            out.append(x)
-        return self.head(self.ln_f(torch.cat(out, dim=1))), state
+                prev_h = prev_h.detach()  # the next chunk's first write key
+            yield self.head(self.ln_f(x)), state
 
     # State accessors, overridden by Combined whose state carries two memories.
     def _mem(self, state):

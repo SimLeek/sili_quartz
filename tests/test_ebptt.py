@@ -138,6 +138,36 @@ def test_sparse_credit_matches_dense_on_kept_dims():
     torch.testing.assert_close(wv.grad, sum(G[b] @ E_V[b] for b in range(B)))
 
 
+@pytest.mark.parametrize("family", ["titans", "combined"])
+def test_stream_backward_matches_full_backward(family):
+    """Per-chunk backward gives the episode-summed loss's gradient exactly."""
+    from sili_quartz.models import FAMILIES
+    from sili_quartz.models.common import recall_loss
+    from sili_quartz.models.ebptt import stream_backward
+    from sili_quartz.tasks import make_batch
+
+    spec = RecallSpec(n_pairs=2, n_queries=2, gap=8)
+    toks, tgts = make_batch(spec, 4, np.random.default_rng(0))
+    grads = []
+    for mode in ("full", "stream"):
+        torch.manual_seed(0)
+        m = FAMILIES[family](vocab=spec.vocab, d=16, n_heads=2, chunk=4, tbptt_chunks=1,
+                             credit="trace", credit_density=0.5, credit_score="noise")
+        torch.manual_seed(1)  # same noise draws in both modes
+        if mode == "full":
+            recall_loss(m(toks)[0], tgts).backward()
+        else:
+            stream_backward(m, toks, tgts)
+        grads.append({k: p.grad.clone() for k, p in m.named_parameters() if p.grad is not None})
+    # a parameter reached only through a detached state has no grad in one
+    # mode and an all-zero grad in the other; both mean zero
+    for k in grads[0].keys() | grads[1].keys():
+        g0, g1 = grads[0].get(k), grads[1].get(k)
+        g0 = torch.zeros_like(g1) if g0 is None else g0
+        g1 = torch.zeros_like(g0) if g1 is None else g1
+        torch.testing.assert_close(g1, g0, rtol=1e-4, atol=1e-6, msg=k)
+
+
 def test_buffer_keeps_last_nonzero_writes():
     torch.manual_seed(0)
     d, n = 4, 3
@@ -156,6 +186,32 @@ from sili_quartz.tasks import RecallSpec  # noqa: E402
 from tests.test_mac import _train  # noqa: E402
 
 PASS_MARGIN = 0.8  # same bar as test_memory_learns_long_gap_recall
+
+
+@pytest.mark.integration
+def test_ebptt_noise_sparse_per_chunk_backward_learns_long_gap():
+    """Row 15 at constant memory: state detached every chunk, each chunk's loss
+    backpropagated as soon as it ends, credit over a noise-chosen 1/4 of the
+    memory dims (docs/results/2026-11-17-ebptt-credit-sweep.md)."""
+    from sili_quartz.models.ebptt import stream_backward
+    from sili_quartz.tasks import make_batch
+    from tests.test_mac import DEV, _evaluate
+
+    torch.manual_seed(0)
+    spec = RecallSpec(n_pairs=3, n_queries=3, gap=16)
+    model = TitansMAC(vocab=spec.vocab, d=64, n_heads=4, chunk=8, tbptt_chunks=1,
+                      credit="trace", credit_density=0.25, credit_score="noise").to(DEV)
+    rng = np.random.default_rng(0)
+    opt = torch.optim.Adam(model.parameters(), lr=3e-3)
+    for _ in range(1500):
+        toks, tgts = make_batch(spec, 32, rng)
+        opt.zero_grad()
+        stream_backward(model, toks.to(DEV), tgts.to(DEV))
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        opt.step()
+    acc, base = _evaluate(model, spec)
+    print(f"ebptt noise_p25_stream: acc {acc:.3f} base {base:.3f}")
+    assert acc > base + PASS_MARGIN, (acc, base)
 
 
 @pytest.mark.integration

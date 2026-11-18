@@ -58,8 +58,12 @@ cost) rather than a pass/fail "better". Record both numbers in the ledger.
     On row 15 with the state detached every chunk: credit from a plain sum of
     remembered inputs 0.268, buffer 0.212. With the V-side Jacobian carried
     (I − c k kᵀ): trace 0.969, buffer-16 0.891 (pass). W_V-only credit 0.061.
-    Open: the user's own spoofing variants (input / grad_input / grad_output
-    substitution without a Jacobian), and the cost axis (in-window curve).
+    Sparse credit backward over a noise-chosen 1/4 of memory dims matches the
+    dense credit (9/11 vs 6/8 seeds ≥ 0.95); |G|-chosen is biased and stalls
+    (Bend proof: sili__new bend_proofs/noise_selected_credit). Per-chunk
+    backward (`stream_backward`) makes memory flat in T: 22 MiB at T = 28…1036
+    vs 45…1582 MiB for full BPTT. Row-15 test at constant memory: 0.980.
+    Open: the in-window cost axis (running), larger d for the wall-time saving.
 - **Adam → sili importance (single-state optimizer).** Expected: worse
   accuracy/steps until the mean/variance control and eigenvalue stochastic
   annealing land (those may recover it). The benefit that is certain is RAM:

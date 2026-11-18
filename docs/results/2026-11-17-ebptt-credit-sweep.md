@@ -121,3 +121,29 @@ CSVs: `runs/ebptt_sweep/seeds/`.
 - At p = 0.125, 4 of 8 reach ≥ 0.95. Of the rest, two sit at 0.37 for all 3000
   steps and two are still rising (0.64, 0.81).
 - GPU peaks: 1080 57 °C, 1660 SUPER 53, 2060 52, P40 43 (200 W cap).
+
+## Per-chunk backward: memory flat in context length
+
+`ebptt.stream_backward` runs the model one chunk at a time (`TitansMAC.stream`)
+and backpropagates each chunk's loss as soon as the chunk ends: the same
+gradient as the episode-summed loss (unit test, titans and combined), but only
+one chunk's graph is alive. The previous chunk's last token, which keys the
+next chunk's first write, is now detached at each tbptt cut too (row 15 trace
+0.969 → 0.947 from that; buffer and ablations unchanged).
+
+Laptop 1660 Ti, batch 32, 5 steps after warm-up:
+
+| T | full BPTT | noise p25, one backward | noise p25, per-chunk | dense carry, per-chunk |
+|---|---|---|---|---|
+| 28 | 92 ms, 45 MiB | 79 ms, 26 MiB | 72 ms, 22 MiB | 62 ms, 22 MiB |
+| 268 | 935 ms, 410 MiB | 636 ms, 187 MiB | 534 ms, 22 MiB | 481 ms, 22 MiB |
+| 1036 | 3789 ms, 1582 MiB | 2614 ms, 699 MiB | 1996 ms, 22 MiB | 1726 ms, 22 MiB |
+
+- Peak memory is 22 MiB at every T with per-chunk backward.
+- Time is linear in T for every arm (each token is processed); per-chunk is
+  about half of full BPTT.
+- At d = 64 the noise top-k is slower in wall time than dense: top-k and
+  gather cost more than the 4× smaller matmul saves on a latency-bound GPU.
+  The multiply-add saving is real; wall time should follow at larger d or in
+  sili's kernels, not measured here.
+- Row-15 test at constant memory (noise p25, per-chunk, 1500 steps): 0.980.

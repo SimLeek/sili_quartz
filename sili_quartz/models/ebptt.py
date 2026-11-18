@@ -94,3 +94,26 @@ def substitute_saved(target: Tensor, replacement: Tensor):
 
     with torch.autograd.graph.saved_tensors_hooks(pack, unpack):
         yield
+
+
+def stream_backward(model, tokens: Tensor, targets: Tensor, state=None) -> Tensor:
+    """Backprop each chunk's loss as soon as the chunk ends, then free its graph.
+
+    Same gradient as recall_loss(model(tokens), targets).backward() when
+    tbptt_chunks = 1: per-chunk cross-entropy sums over the episode's scored
+    count. Activation memory is one chunk's, not the episode's. Returns the
+    loss value (detached)."""
+    import torch.nn.functional as F
+
+    n = (targets != -100).sum().clamp_min(1)
+    total, s = torch.zeros((), device=tokens.device), 0
+    for logits, _ in model.stream(tokens, state):
+        t = targets[:, s : s + logits.shape[1]]
+        s += logits.shape[1]
+        if (t != -100).any():
+            loss = F.cross_entropy(
+                logits.reshape(-1, logits.shape[-1]), t.reshape(-1), ignore_index=-100, reduction="sum"
+            ) / n
+            loss.backward()
+            total = total + loss.detach()
+    return total
