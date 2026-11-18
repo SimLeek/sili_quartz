@@ -117,6 +117,27 @@ def test_credit_matches_bptt_wv_over_many_writes(mode):
     torch.testing.assert_close(grads[mode], grads["bptt"], rtol=1e-4, atol=1e-5)
 
 
+def test_sparse_credit_matches_dense_on_kept_dims():
+    """density < 1 computes the same contraction restricted to the top-|G| dims."""
+    torch.manual_seed(0)
+    B, d, di = 2, 8, 5
+    M, E_V, E_K = torch.randn(B, d, d), torch.randn(B, d, di), torch.randn(B, d, di)
+    G = torch.randn(B, d, d)
+    wv, wk = torch.zeros(d, di, requires_grad=True), torch.zeros(d, di, requires_grad=True)
+    credit(M, wv, wk, E_V, E_K, density=0.5).backward(G)
+    ev, ek = torch.zeros(d, di), torch.zeros(d, di)
+    for b in range(B):
+        j = G[b].norm(dim=0).topk(4).indices
+        i = G[b].norm(dim=1).topk(4).indices
+        ev += G[b][:, j] @ E_V[b][j]
+        ek += G[b][i].T @ E_K[b][i]
+    torch.testing.assert_close(wv.grad, ev)
+    torch.testing.assert_close(wk.grad, ek)
+    wv.grad = wk.grad = None
+    credit(M, wv, wk, E_V, E_K, density=1.0).backward(G)
+    torch.testing.assert_close(wv.grad, sum(G[b] @ E_V[b] for b in range(B)))
+
+
 def test_buffer_keeps_last_nonzero_writes():
     torch.manual_seed(0)
     d, n = 4, 3

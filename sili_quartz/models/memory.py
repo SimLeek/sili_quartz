@@ -91,6 +91,8 @@ class TitansMemory(nn.Module):
         credit_mask: str = "none",
         credit_tau: float = 0.0,
         credit_noise_t: float = 16.0,
+        credit_density: float = 1.0,
+        credit_score: str = "grad",
     ):
         super().__init__()
         if gates not in ("const", "kernel_matched"):
@@ -113,6 +115,12 @@ class TitansMemory(nn.Module):
             raise ValueError("credit_carry in full/none/masked, credit_mask in none/noise")
         self.credit_carry, self.credit_mask = credit_carry, credit_mask
         self.credit_tau, self.credit_noise_t = credit_tau, credit_noise_t
+        # credit_density < 1: the credit backward keeps only the top fraction of
+        # memory dims, scored by |G| ("grad"), |G| x Phi(z) ("grad_noise") or
+        # Phi(z) ("noise"); the rest are skipped.
+        if credit_score not in ("grad", "grad_noise", "noise"):
+            raise ValueError("credit_score in grad/grad_noise/noise")
+        self.credit_density, self.credit_score = credit_density, credit_score
         d_mem = d_mem or d_in
         self.d_in, self.d_mem = d_in, d_mem
         self.alpha, self.eta, self.theta_scale = alpha, eta, theta_scale
@@ -223,7 +231,7 @@ class TitansMemory(nn.Module):
         a = 1.0 - alpha
         if self.credit == "trace":
             m_in = m_mem = None
-            if noise is not None and (self.credit_mask == "noise" or self.credit_carry == "masked"):
+            if noise is not None and self._uses_noise():
                 r = torch.exp(torch.tensor(-x.shape[1] / self.credit_noise_t))
                 noise = r * noise + (1 - r * r).sqrt() * torch.randn_like(noise)
                 u = 0.5 * (1 + torch.erf(noise / 2**0.5))  # Phi(z): uniform [0, 1] marginal
@@ -257,6 +265,13 @@ class TitansMemory(nn.Module):
         buf = tuple(torch.gather(t, 1, order.unsqueeze(-1).expand(-1, -1, t.shape[-1])) for t in cat)
         return E_V, E_K, buf, noise
 
+    def _uses_noise(self) -> bool:
+        return (
+            self.credit_mask == "noise"
+            or self.credit_carry == "masked"
+            or (self.credit_density < 1.0 and self.credit_score != "grad")
+        )
+
     def with_credit(self, state: MemoryState) -> MemoryState:
         """Detached copy of `state` whose M routes dL/dM into W_V/W_K (e-BPTT)."""
         from sili_quartz.models.ebptt import credit
@@ -271,7 +286,11 @@ class TitansMemory(nn.Module):
             E_V, E_K = torch.einsum("bni,bnj->bij", ck, x), torch.einsum("bni,bnj->bij", ce, xk)
         if not self.credit_k:
             E_K = torch.zeros_like(E_K)
-        st.M = credit(st.M, self.W_V.weight, self.W_K.weight, E_V, E_K)
+        u = None
+        if st.noise is not None:
+            u = 0.5 * (1 + torch.erf(st.noise[:, self.d_in :] / 2**0.5))
+        st.M = credit(st.M, self.W_V.weight, self.W_K.weight, E_V, E_K,
+                      self.credit_density, self.credit_score, u)
         return st
 
     @torch.no_grad()

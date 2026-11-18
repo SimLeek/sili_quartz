@@ -31,23 +31,54 @@ import torch
 from torch import Tensor
 
 
+def _top(score: Tensor, k: int) -> Tensor:
+    return score.topk(k, dim=1).indices  # [B, k]
+
+
 class _Credit(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, M, w_v, w_k, E_V, E_K):
-        ctx.save_for_backward(E_V, E_K)
+    def forward(ctx, M, w_v, w_k, E_V, E_K, density, score, u):
+        ctx.save_for_backward(E_V, E_K, u)
+        ctx.density, ctx.score = density, score
         return M.view_as(M)
 
     @staticmethod
     def backward(ctx, G):
-        E_V, E_K = ctx.saved_tensors
-        g_v = torch.einsum("bij,bjk->ik", G, E_V)
-        g_k = torch.einsum("bji,bjk->ik", G, E_K)
-        return None, g_v, g_k, None, None
+        E_V, E_K, u = ctx.saved_tensors
+        none = (None,) * 6
+        if ctx.density >= 1.0:
+            g_v = torch.einsum("bij,bjk->ik", G, E_V)
+            g_k = torch.einsum("bji,bjk->ik", G, E_K)
+            return (None, g_v, g_k) + none[:5]
+        # Sparse credit: keep the top `density` of M's key dims for G.E_V and of
+        # its value dims for G^T.E_K, skip the rest. Cost 2 p d^3 instead of 2 d^3.
+        d = G.shape[1]
+        k = max(1, round(ctx.density * d))
+
+        def score(norm):
+            if ctx.score == "grad":
+                return norm
+            if ctx.score == "noise":
+                return u
+            return norm * u  # grad_noise
+
+        j = _top(score(G.norm(dim=1)), k)  # key dims (columns of G, rows of E_V)
+        Gj = torch.gather(G, 2, j[:, None, :].expand(-1, d, -1))
+        Ej = torch.gather(E_V, 1, j[:, :, None].expand(-1, -1, E_V.shape[2]))
+        g_v = torch.einsum("bij,bjk->ik", Gj, Ej)
+        i = _top(score(G.norm(dim=2)), k)  # value dims (rows of G and of E_K)
+        Gi = torch.gather(G, 1, i[:, :, None].expand(-1, -1, d))
+        Ei = torch.gather(E_K, 1, i[:, :, None].expand(-1, -1, E_K.shape[2]))
+        g_k = torch.einsum("bij,bik->jk", Gi, Ei)
+        return (None, g_v, g_k) + none[:5]
 
 
-def credit(M: Tensor, w_v: Tensor, w_k: Tensor, E_V: Tensor, E_K: Tensor) -> Tensor:
-    """M unchanged forward; backward sends G E_V to w_v and G^T E_K to w_k."""
-    return _Credit.apply(M.detach(), w_v, w_k, E_V, E_K)
+def credit(M, w_v, w_k, E_V, E_K, density: float = 1.0, score: str = "grad", u: Tensor | None = None):
+    """M unchanged forward; backward sends G E_V to w_v and G^T E_K to w_k,
+    optionally over only the top `density` of memory dims (by |G|, |G| x u, or u)."""
+    if u is None:
+        u = torch.ones(M.shape[0], M.shape[1], device=M.device, dtype=M.dtype)
+    return _Credit.apply(M.detach(), w_v, w_k, E_V, E_K, density, score, u)
 
 
 @contextmanager

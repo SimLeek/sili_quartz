@@ -77,3 +77,27 @@ episode and backpropagated once, which keeps every chunk's own graph until
 the end. The trace removes only the cross-chunk part. Backpropagating each
 chunk's loss as soon as the chunk ends would make memory O(1) in T; the credit
 node already allows that, because nothing but E_V/E_K crosses a chunk boundary.
+
+## Sparse credit backward (exact carry, top-p memory dims), 3 seeds
+
+`credit_density=p` keeps the top p of M's key dims for G·E_V and of its value
+dims for Gᵀ·E_K, scored by |G| (`grad`), |G|·Φ(z) (`grad_noise`) or Φ(z)
+alone (`noise`; z drifts with a 16-token correlation time). Batched top-k, then
+a smaller dense matmul: credit backward 2p·d³ per chunk instead of 2d³. Raw CSVs:
+`runs/ebptt_sweep/sbw/`.
+
+| arm | p | credit MACs / token | first ≥ 0.95 (s0/s1/s2) | acc at 3000 | runs ≥ 0.95 at 3000 |
+|---|---|---|---|---|---|
+| exact carry, dense | 1 | ≈ 66k | 1000 / 1000 / 2500 | 0.990 / 0.986 / 0.974 | 3/3 |
+| grad | 0.25 | ≈ 16k | — / — / 2250 | 0.906 / 0.079 / 0.967 | 1/3 |
+| grad_noise | 0.25 | ≈ 16k | — / 2500 / — | 0.064 / 0.974 / 0.893 | 1/3 |
+| **noise** | 0.25 | ≈ 16k | 1500 / 1000 / 2000 | 0.995 / 0.970 / 0.973 | **3/3** |
+| grad_noise | 0.125 | ≈ 8k | — / 2500 / 2250 | 0.086 / 0.848 / 0.966 | 1/3 |
+| grad_noise | 0.5 | ≈ 33k | 1250 / 1250 / — | 0.975 / 0.986 / 0.862 | 2/3 |
+
+- Noise-only selection at 25 % is the only sparse arm whose three seeds all end
+  ≥ 0.97 with no fall-back; its curves rise like the dense carry's.
+- Every arm that scores by |G| has at least one seed that stalls or collapses
+  (sbw_grad_p25 s1 never leaves chance; sbw_gn_p25 s0 reaches 0.54, then falls
+  to chance after step 1500; sbw_gn_p125 s0 peaks at 0.35, ends at 0.09).
+- n = 3 per arm. GPU peaks: laptop 66 °C, 1080 55, 2060 52, 1660 SUPER 51.
