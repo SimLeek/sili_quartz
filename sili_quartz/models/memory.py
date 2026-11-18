@@ -217,7 +217,7 @@ class TitansMemory(nn.Module):
         new = (ck, x, cw * e, xk)
         size = (cw.squeeze(-1) * e.norm(dim=-1) * k.norm(dim=-1)).abs()  # [B, n]
         live = size > self.credit_tol
-        cat = [torch.cat([b, n * live.unsqueeze(-1)], dim=1) for b, n in zip(buf, new)]
+        cat = [torch.cat([b, n * live.unsqueeze(-1)], dim=1) for b, n in zip(buf, new, strict=False)]
         keep = torch.cat([buf[1].abs().sum(-1) > 0, live], dim=1)
         # stable sort puts kept entries last, in time order; take the last n
         order = torch.sort(keep.to(torch.int8), dim=1, stable=True).indices[:, -self.credit_buffer :]

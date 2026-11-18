@@ -131,8 +131,8 @@ def test_buffer_keeps_last_nonzero_writes():
 
 # --- ledger row 15: long-gap recall with the state detached every chunk ----
 
-from tests.test_mac import _train  # noqa: E402
 from sili_quartz.tasks import RecallSpec  # noqa: E402
+from tests.test_mac import _train  # noqa: E402
 
 PASS_MARGIN = 0.8  # same bar as test_memory_learns_long_gap_recall
 
