@@ -3,8 +3,11 @@
 When the memory state is detached, the gradient G = dL/dM that reaches the
 detached M has nowhere to go. `credit` routes it into W_V / W_K as if it had
 backpropagated through the earlier writes, with their saved inputs replaced
-by remembered ones. The state-to-state Jacobian dM_t/dM_{t-1} is taken as the
-identity (e-prop's factorization: learning signal x eligibility trace).
+by remembered ones (RTRL / e-prop: learning signal x eligibility trace).
+Like e-prop, the trace keeps the memory's own state dynamics: each later
+write multiplies M by (I - c k k^T), and the remembered keys are carried
+through it (credit_carry="full"). Dropping that ("none", a plain sum) is NOT
+e-prop and measured far worse (0.268 vs 0.969 on ledger row 15).
 
 For a write M += c (v - M k) k^T, with v = W_V x and k = W_K x_k:
 
