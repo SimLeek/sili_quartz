@@ -37,3 +37,43 @@ Chance (constant predictor) is 0.074.
 - GPU peaks: laptop 1660 Ti 69 °C, 1080 54, 1660 SUPER 51, 2060 51, P40 40
   (200 W cap). Wall times are not comparable across arms (different cards, 1–5
   jobs per card).
+
+## Cost per arm
+
+Analytic multiply-adds per token per batch row, d_in = d_mem = d = 64,
+chunk L = 8, window 1. The full Jacobian dM_t/dM_{t-1} is never formed: it
+is (I − c k kᵀ) acting on M from the right, i.e. I − step·Hessian of the
+write's own loss ½‖Mk − v‖², so applying it to the trace is one
+vector-matrix product and one outer product.
+
+| piece | MACs per token | note |
+|---|---|---|
+| the memory write itself (Mk, outer product, update) | 3d² ≈ 12k | reference |
+| trace sums E_V, E_K (all trace arms) | 2d² ≈ 8k | |
+| exact carry (kᵀE_V, then outer) | +2d² ≈ 8k | the "Jacobian" cost |
+| noise-masked carry (soft mask, as run) | +2d² + O(d) ≈ 8k | no saving until the mask is hard; at density p ≈ 2p·d² |
+| noise mask on inputs | O(d) | negligible |
+| credit backward at each detach (G·E_V, Gᵀ·E_K) | 2d³ / L ≈ 66k | **largest piece**, once per chunk |
+| buffer-16: rebuild E from the buffer at each detach | 2·16·d² / L ≈ 16k | plus sort/gather overhead |
+| explicit Jacobian, if it were formed (d² × d²) | d⁴ ≈ 17M | what generic RTRL would need |
+
+The credit backward could drop to 2n·d²/L with a buffer of n (compute
+(G·ck)·xᵀ instead of forming E), 4× less for n = 16.
+
+Measured on the laptop 1660 Ti, batch 32, 10 steps after warm-up (peak
+memory above the resident model):
+
+| arm | gap 16 (T = 28): ms/step | MiB | gap 256 (T = 268): ms/step | MiB |
+|---|---|---|---|---|
+| full BPTT across the episode | 91.8 | 44.8 | 915.4 | 411.7 |
+| detach every chunk, no credit | 61.0 | 22.8 | 467.6 | 146.1 |
+| pure spoof (trace, no carry) | 71.7 | 26.6 | 503.0 | 183.6 |
+| exact carry | 77.7 | 26.6 | 536.8 | 183.6 |
+| buffer-16 | 91.4 | 26.1 | 677.7 | 183.5 |
+
+At gap 256 the exact carry takes 59 % of BPTT's time and 45 % of its memory.
+Memory still grows with T in every arm, because the loss is summed over the
+episode and backpropagated once, which keeps every chunk's own graph until
+the end. The trace removes only the cross-chunk part. Backpropagating each
+chunk's loss as soon as the chunk ends would make memory O(1) in T; the credit
+node already allows that, because nothing but E_V/E_K crosses a chunk boundary.
