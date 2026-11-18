@@ -147,3 +147,30 @@ Laptop 1660 Ti, batch 32, 5 steps after warm-up:
   The multiply-add saving is real; wall time should follow at larger d or in
   sili's kernels, not measured here.
 - Row-15 test at constant memory (noise p25, per-chunk, 1500 steps): 0.980.
+
+## The tradeoff (TODO 2b): steps to 0.95 vs full BPTT, by gap
+
+3 seeds, 3000 steps, batch 32. e-BPTT arm = noise p25 sparse credit with
+per-chunk backward (constant memory). Raw CSVs: `runs/ebptt_sweep/axes/`.
+
+| gap | full BPTT (untruncated): first ≥ 0.95 · acc at 3000 | e-BPTT: first ≥ 0.95 · acc at 3000 |
+|---|---|---|
+| 0 | — — — · 0.783 0.792 0.788 | 1250 — — · 0.990 0.796 0.777 |
+| 16 | 250 250 250 · 1.000 ×3 | 1250 — 2750 · 0.987 0.940 0.948 |
+| 64 | 250 250 250 · 1.000 ×3 | — — 750 · 0.441 0.383 0.990 |
+
+- **Gap 16:** e-BPTT needs 5–10× the steps of full BPTT; one seed is still
+  rising at 0.94.
+- **Gap 64:** full BPTT solves all three seeds by step 250. e-BPTT solves one
+  by 750; the other two sit at 0.38–0.61 for all 3000 steps. The step cost
+  grows with the gap. (A first gap-64 BPTT arm with `tbptt_chunks=8`, 64
+  tokens, shorter than the ~70-token pair-to-query span, stayed at chance:
+  truncated below the gap, not a BPTT result.)
+- **Gap 0 does not measure the e-BPTT cost.** At chunk 8 the first query
+  lands in the pairs' own chunk, which only attention can answer. Full BPTT,
+  measured per query: that query 0.37 (≈ 1/3, guessing among the three values),
+  the two memory-answered queries 1.000 → the 0.79 plateau. One e-BPTT seed
+  learned it (0.99). A clean in-window test needs the whole episode inside one
+  chunk.
+- Memory for the same runs: full BPTT grows with T (45 → 1582 MiB from T = 28
+  to 1036, table above); e-BPTT stays at 22 MiB.

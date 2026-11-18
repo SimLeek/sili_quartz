@@ -63,7 +63,10 @@ cost) rather than a pass/fail "better". Record both numbers in the ledger.
     (Bend proof: sili__new bend_proofs/noise_selected_credit). Per-chunk
     backward (`stream_backward`) makes memory flat in T: 22 MiB at T = 28…1036
     vs 45…1582 MiB for full BPTT. Row-15 test at constant memory: 0.980.
-    Open: the in-window cost axis (running), larger d for the wall-time saving.
+    Cost axis: steps to 0.95 vs full BPTT ×5–10 at gap 16; at gap 64 BPTT 3/3
+    by 250, e-BPTT 1/3 by 750 and 2/3 stuck ~0.4 (cost grows with gap).
+    Open: clean in-window test (episode inside one chunk); more steps / seeds
+    at gap 64; larger d for the wall-time saving.
 - **Adam → sili importance (single-state optimizer).** Expected: worse
   accuracy/steps until the mean/variance control and eigenvalue stochastic
   annealing land (those may recover it). The benefit that is certain is RAM:
