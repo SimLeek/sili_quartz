@@ -18,10 +18,10 @@ record under [Done](#done) at the bottom; results live in `docs/results/`.
 
 ## 1a. PLAN (user, 2026-11-16), in order
 1. **Seeds** — Done → [details](#done-1a1). Seed 1 never trains for either
-   family (ledger row 32).
+   family (JOURNAL row 32).
 2. **poly2** — Dropped (user, 2026-11-17) → [details](#done-1a2)
 3. **Ablation tests** (rows 14/15/24) — Done → [details](#done-1a3)
-4. **Seed-1 failure** (row 32): combined fails on *data stream 1* alone; titans
+4. **Seed-1 failure** (JOURNAL row 32): combined fails on *data stream 1* alone; titans
    only with init 1 + data 1; poly2 r16 collapses on seed 2. Hypothesis (user): early training + Adam without stochastic
    annealing; industry would discard such runs, sili may recover them. A hard
    data stream is an ASSET: keep it as a fixture and re-run it under the sili
@@ -52,6 +52,21 @@ cost) rather than a pass/fail "better". Record both numbers in the ledger.
   the BPTT window. Test: long-gap accuracy vs steps AND in-window accuracy vs
   steps, side by side with full in-episode BPTT; the cost is the right-shift of
   the in-window curve.
+  - **Torch first pass (branch research/e-bptt-fake-backprop, 2026-11-17):**
+    `models/ebptt.py`. Overriding a saved input during backward works
+    (`saved_tensors_hooks`; tested on starmap / blob-walk z=t / noise inputs).
+    On row 15 with the state detached every chunk: credit from a plain sum of
+    remembered inputs 0.268, buffer 0.212. With the V-side Jacobian carried
+    (I − c k kᵀ): trace 0.969, buffer-16 0.891 (pass). W_V-only credit 0.061.
+    Sparse credit backward over a noise-chosen 1/4 of memory dims matches the
+    dense credit (9/11 vs 6/8 seeds ≥ 0.95); |G|-chosen is biased and stalls
+    (Bend proof: sili__new bend_proofs/noise_selected_credit). Per-chunk
+    backward (`stream_backward`) makes memory flat in T: 22 MiB at T = 28…1036
+    vs 45…1582 MiB for full BPTT. Row-15 test at constant memory: 0.980.
+    Cost axis: steps to 0.95 vs full BPTT ×5–10 at gap 16; at gap 64 BPTT 3/3
+    by 250, e-BPTT 1/3 by 750 and 2/3 stuck ~0.4 (cost grows with gap).
+    Open: clean in-window test (episode inside one chunk); more steps / seeds
+    at gap 64; larger d for the wall-time saving.
 - **Adam → sili importance (single-state optimizer).** Expected: worse
   accuracy/steps until the mean/variance control and eigenvalue stochastic
   annealing land (those may recover it). The benefit that is certain is RAM:
@@ -60,6 +75,41 @@ cost) rather than a pass/fail "better". Record both numbers in the ledger.
   one-value optimizer would be 2/3). Test: same curves as above plus peak
   memory per parameter; a regression in steps-to-threshold is EXPECTED and must
   be quantified, not hidden. Adam remains the diagnostic reference.
+
+## 2c. NEXT: does energy RL prevent model collapse? (user, 2026-11-18)
+Model collapse: a language model trained on another LM's samples, chained
+generation after generation, loses rare words first (the tails vanish) and
+eventually repeats forever (Shumailov et al., Nature 2024, "AI models collapse
+when trained on recursively generated data"). Raising sampling temperature does
+not fix it: it keeps the tails but loses sentence structure. The claim to test:
+even a small dose of neuron energy RL in the model that *generates* the data
+(per-neuron temperature, not token temperature) stops the collapse.
+
+Not stochastic annealing: that rescues the optimizer state in self-training.
+Here the next model trains on outputs of a model whose energy RL is active.
+
+1. **Torch energy.** sili's `EnergyDynamics` (sili__new `sili/energy.py`) has
+   no torch equivalent: discrete gating, an abs backward, and a KL aux loss
+   (sili__new `tests/integration/test_transformer.py:8-9`). Port it as a
+   custom `autograd.Function` + module, with unit tests that it matches
+   sili's forward/backward on a fixed input. (User mentioned a torch version
+   exists; not found by grep, so check first.)
+2. **The chain.** Generation 0 = "some model": a pretrained LM, kept outside
+   the codebase (MiniCPM5-1B-Base is at `~/claude_code/MiniCPM5-1B-Base`; any
+   small causal LM works). Generation i+1 is trained (LM loss, partly mixed
+   with the energy RL aux loss) on text sampled from generation i. Fixed real
+   held-out text for evaluation.
+3. **Collapse metrics, per generation:** frequency of rare tokens (mass in the
+   bottom tail of the gen-0 unigram distribution), distinct-n / unique n-gram
+   ratio, longest repeated span / repetition rate, perplexity on the real
+   held-out text, a structure check (e.g. gen-0 model's perplexity on the
+   samples).
+4. **Arms:** plain sampling at T = 1 (expected: collapse by generation n);
+   temperature sweep (expected: tails kept, structure lost); energy RL dose
+   sweep from tiny (1e-6, expected useless) up, to find where the line is.
+   Pass = no collapse through n + k generations (k a fixed budget) at some
+   dose, with structure kept. Seeds = same program run N times.
+5. Results to `docs/results/`, ledger row for the property.
 
 ## 3. Training-regime constraints (user, 2026-11-15)
 - **Sleep window (≤ 8 h/day, once a day) = annealing + health passes that
@@ -114,7 +164,7 @@ Result: **B cannot bind; C and B+C are the path.** Ledger rows 18/19, 29;
   (`tests/test_mac.py::test_family_capacity_probe`).
 
 <a id="done-1b"></a>
-## 1b. Long-run B+C vs C (PR #3) — combined leads (ledger row 30)
+## 1b. Long-run B+C vs C (PR #3) — combined leads (JOURNAL row 30)
 - 230-min runs, 32-pair probe: titans 30.2 vs combined 30.7 of 32 (windowed).
   [docs/results/2026-11-15-long-family-runs.md](docs/results/2026-11-15-long-family-runs.md)
 - Equal 40k steps, 128-key vocab, train 16 pairs, stress 64 pairs: 30–40k
@@ -131,7 +181,7 @@ Result: **B cannot bind; C and B+C are the path.** Ledger rows 18/19, 29;
   Gram (differentiable). Ledger row 1 re-derived as "window stores exactly when
   keys are independent" before switching; that test doubles as the capacity probe.
 - At d_k=64, 32-binding probe: poly2 saturated 32/32; omega alone 28.3 vs base ~19.
-- At scale (128-key, 16 pairs) poly2 + omega **fails to train** (ledger row 31,
+- At scale (128-key, 16 pairs) poly2 + omega **fails to train** (JOURNAL row 31,
   train acc 0.74 at 40k) — open as 1a.2.
 
 <a id="done-1a1"></a>
@@ -143,7 +193,7 @@ Result: **B cannot bind; C and B+C are the path.** Ledger rows 18/19, 29;
   64; worst eval 43.4 vs 53.7. Combined ≥ titans for every trained seed.
 - Seed 1 never trains for either family (combined collapses to a constant
   predictor; titans creeps to 0.07 train acc). titans s3 plateaus until ~10k.
-  Spread is *whether/when training escapes the start* → ledger row 32, plan 1a.4.
+  Spread is *whether/when training escapes the start* → JOURNAL row 32, plan 1a.4.
 
 <a id="done-1a3"></a>
 ## 1a.3 Ablation tests for the required settings (PR #3)

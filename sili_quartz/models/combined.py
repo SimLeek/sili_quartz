@@ -52,4 +52,4 @@ class Combined(TitansMAC):
         return CombinedState(mem, state.rmt)
 
     def _detach(self, state):
-        return state.detach()
+        return CombinedState(self.memory.with_credit(state.mem), state.rmt.detach())

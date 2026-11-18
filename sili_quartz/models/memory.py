@@ -20,6 +20,11 @@ stores a window of orthogonal keys exactly in one step and reduces to the
 0.5/||k||^2 delta rule at c = 1. `inner_steps` iterates toward the
 least-squares solution for correlated keys.
 
+`credit`: how a write gets gradient once the state is detached. "bptt" (default):
+only through the graph. "trace": e-BPTT eligibility traces, a running sum over
+every write (fixed size, = M). "buffer": the same, rebuilt from the last
+`credit_buffer` writes whose update was not ~zero. See models/ebptt.py.
+
 `gates`: "const" uses alpha/eta as given. "kernel_matched" has no free knob:
 alpha = 1/L, eta = 1 - 1/L, theta scaled by (1 - eta), from the retention
 kernel's Law 5 (sili__new/bend_proofs/titans_gate_retention_kernel) and the
@@ -42,6 +47,10 @@ class MemoryState:
     keys: Tensor | None = None  # [B, K, d_mem] recent raw write keys, for lag estimation
     ticks: Tensor | None = None  # [B, K]
     tick: int = 0
+    E_V: Tensor | None = None  # [B, d_mem, d_in] e-BPTT eligibility traces (credit != "bptt")
+    E_K: Tensor | None = None
+    buf: tuple | None = None  # credit="buffer": last n non-zero writes (ck, x, ce, x_k), each [B, n, .]
+    noise: Tensor | None = None  # [B, d_in + d_mem] slowly drifting gaussian for credit masks
 
     def detach(self) -> MemoryState:
         return MemoryState(
@@ -51,6 +60,10 @@ class MemoryState:
             None if self.keys is None else self.keys.detach(),
             self.ticks,
             self.tick,
+            self.E_V,
+            self.E_K,
+            self.buf,
+            self.noise,
         )
 
 
@@ -70,12 +83,44 @@ class TitansMemory(nn.Module):
         lag_beta: float = 0.02,
         lag_buffer: int = 64,
         eps: float = 1e-6,
+        credit: str = "bptt",
+        credit_buffer: int = 16,
+        credit_tol: float = 1e-3,
+        credit_k: bool = True,
+        credit_carry: str = "full",
+        credit_mask: str = "none",
+        credit_tau: float = 0.0,
+        credit_noise_t: float = 16.0,
+        credit_density: float = 1.0,
+        credit_score: str = "grad",
     ):
         super().__init__()
         if gates not in ("const", "kernel_matched"):
             raise ValueError(f"gates must be 'const' or 'kernel_matched', got {gates!r}")
         if window < 1 or inner_steps < 1:
             raise ValueError("window and inner_steps must be >= 1")
+        if credit not in ("bptt", "trace", "buffer"):
+            raise ValueError(f"credit must be 'bptt', 'trace' or 'buffer', got {credit!r}")
+        if credit != "bptt" and (eta != 0.0 or inner_steps != 1 or gates != "const"):
+            raise ValueError("e-BPTT credit assumes eta=0, inner_steps=1, const gates")
+        self.credit, self.credit_buffer, self.credit_tol = credit, credit_buffer, credit_tol
+        self.credit_k = credit_k  # False: credit W_V only (the exactly-carried side)
+        # credit_carry: "full" carries the V-side Jacobian, "none" is the plain
+        # sum, "masked" carries it only along noise-masked key dims.
+        # credit_mask: "noise" multiplies the remembered inputs by
+        # 1[|x| > tau * rms(x)] * Phi(z_t), z_t a gaussian drifting with
+        # correlation time credit_noise_t tokens: a sparse persistence prior
+        # that keeps credit on similar inputs for a while.
+        if credit_carry not in ("full", "none", "masked") or credit_mask not in ("none", "noise"):
+            raise ValueError("credit_carry in full/none/masked, credit_mask in none/noise")
+        self.credit_carry, self.credit_mask = credit_carry, credit_mask
+        self.credit_tau, self.credit_noise_t = credit_tau, credit_noise_t
+        # credit_density < 1: the credit backward keeps only the top fraction of
+        # memory dims, scored by |G| ("grad"), |G| x Phi(z) ("grad_noise") or
+        # Phi(z) ("noise"); the rest are skipped.
+        if credit_score not in ("grad", "grad_noise", "noise"):
+            raise ValueError("credit_score in grad/grad_noise/noise")
+        self.credit_density, self.credit_score = credit_density, credit_score
         d_mem = d_mem or d_in
         self.d_in, self.d_mem = d_in, d_mem
         self.alpha, self.eta, self.theta_scale = alpha, eta, theta_scale
@@ -89,6 +134,13 @@ class TitansMemory(nn.Module):
     def init_state(self, batch: int, device=None, dtype=None) -> MemoryState:
         z = torch.zeros(batch, self.d_mem, self.d_mem, device=device, dtype=dtype)
         st = MemoryState(z, z.clone())
+        if self.credit == "trace":
+            st.E_V = torch.zeros(batch, self.d_mem, self.d_in, device=device, dtype=dtype)
+            st.E_K = torch.zeros_like(st.E_V)
+            st.noise = torch.randn(batch, self.d_in + self.d_mem, device=device, dtype=dtype)
+        elif self.credit == "buffer":
+            e = lambda d: torch.zeros(batch, 0, d, device=device, dtype=dtype)  # noqa: E731
+            st.buf = (e(self.d_mem), e(self.d_in), e(self.d_mem), e(self.d_in))
         if self.gates == "kernel_matched":
             st.lag = torch.ones(batch, device=device, dtype=dtype)
             st.keys = torch.zeros(batch, self.lag_buffer, self.d_mem, device=device, dtype=dtype)
@@ -134,11 +186,13 @@ class TitansMemory(nn.Module):
         k_src lets the key come from a different representation than the value
         (same shape as x); default is x itself, as in eq 11.
         """
-        k_raw = self.W_K(x if k_src is None else k_src)
+        xk = x if k_src is None else k_src
+        k_raw = self.W_K(xk)
         K, V = k_raw, self.W_V(x)  # [B, L, d_mem] each
         M, S = state.M, state.S
         alpha, eta, th_mul = self._gates(state)
         L, c = x.shape[1], self.window
+        E_V, E_K, buf, noise = state.E_V, state.E_K, state.buf, state.noise
         for s in range(0, L, c):
             Kw, Vw = K[:, s : s + c], V[:, s : s + c]
             n = Kw.shape[1]
@@ -154,12 +208,90 @@ class TitansMemory(nn.Module):
             for _ in range(self.inner_steps):
                 err = torch.einsum("bij,bnj->bni", M, Kw) - Vw  # [B, n, d_mem]
                 grad = torch.einsum("bni,bnj->bij", err * w, Kw)  # sum_i w_i err_i k_i^T
+                if self.credit != "bptt":
+                    E_V, E_K, buf, noise = self._note_write(
+                        E_V, E_K, buf, noise, (step * w).detach(), Kw.detach(), -err.detach(),
+                        x[:, s : s + c].detach(), xk[:, s : s + c].detach(), alpha,
+                    )
                 S = eta * S - step * grad
                 M = (1.0 - alpha) * M + S
-        out = MemoryState(M, S, state.lag, state.keys, state.ticks, state.tick + L)
+        out = MemoryState(M, S, state.lag, state.keys, state.ticks, state.tick + L, E_V, E_K, buf, noise)
         if self.gates == "kernel_matched":
             self._buffer_keys(k_raw.detach(), state, out)
         return out
+
+    @torch.no_grad()
+    def _note_write(self, E_V, E_K, buf, noise, cw, k, e, x, xk, alpha):
+        """Record one window's write M <- (1-alpha) M (I - K^T C K) + sum_i c_i v_i k_i^T.
+
+        Earlier writes' keys are carried through (I - K^T C K), the exact
+        state-to-state Jacobian on the V side (O(d * d_in) per window). The K
+        side keeps the plain sum: its exact form needs a d^3 trace."""
+        ck = cw * k  # [B, n, d_mem]
+        a = 1.0 - alpha
+        if self.credit == "trace":
+            m_in = m_mem = None
+            if noise is not None and self._uses_noise():
+                r = torch.exp(torch.tensor(-x.shape[1] / self.credit_noise_t))
+                noise = r * noise + (1 - r * r).sqrt() * torch.randn_like(noise)
+                u = 0.5 * (1 + torch.erf(noise / 2**0.5))  # Phi(z): uniform [0, 1] marginal
+                m_in, m_mem = u[:, None, : self.d_in], u[:, None, self.d_in :]
+            if self.credit_mask == "noise":
+                def gate(t):
+                    rms = t.pow(2).mean(-1, keepdim=True).sqrt()
+                    return t * (t.abs() > self.credit_tau * rms) * m_in
+                x, xk = gate(x), gate(xk)
+            if self.credit_carry == "full":  # (I - K^T C K) E_V
+                E_V = a * (E_V - torch.einsum("bnd,bnj->bdj", k, torch.einsum("bnd,bdj->bnj", ck, E_V)))
+            elif self.credit_carry == "masked":
+                km, ckm = k * m_mem, ck * m_mem
+                E_V = a * (E_V - torch.einsum("bnd,bnj->bdj", km, torch.einsum("bnd,bdj->bnj", ckm, E_V)))
+            else:
+                E_V = a * E_V
+            E_V = E_V + torch.einsum("bni,bnj->bij", ck, x)
+            E_K = a * E_K + torch.einsum("bni,bnj->bij", cw * e, xk)
+            return E_V, E_K, buf, noise
+        # buffer: carry the stored keys, then keep the last n tokens whose
+        # update cw*|e|*|k| is not ~zero, per batch row.
+        old_ck = a * (buf[0] - torch.einsum("bmn,bnd->bmd", buf[0] @ ck.transpose(1, 2), k))
+        buf = (old_ck, buf[1], a * buf[2], buf[3])
+        new = (ck, x, cw * e, xk)
+        size = (cw.squeeze(-1) * e.norm(dim=-1) * k.norm(dim=-1)).abs()  # [B, n]
+        live = size > self.credit_tol
+        cat = [torch.cat([b, n * live.unsqueeze(-1)], dim=1) for b, n in zip(buf, new, strict=False)]
+        keep = torch.cat([buf[1].abs().sum(-1) > 0, live], dim=1)
+        # stable sort puts kept entries last, in time order; take the last n
+        order = torch.sort(keep.to(torch.int8), dim=1, stable=True).indices[:, -self.credit_buffer :]
+        buf = tuple(torch.gather(t, 1, order.unsqueeze(-1).expand(-1, -1, t.shape[-1])) for t in cat)
+        return E_V, E_K, buf, noise
+
+    def _uses_noise(self) -> bool:
+        return (
+            self.credit_mask == "noise"
+            or self.credit_carry == "masked"
+            or (self.credit_density < 1.0 and self.credit_score != "grad")
+        )
+
+    def with_credit(self, state: MemoryState) -> MemoryState:
+        """Detached copy of `state` whose M routes dL/dM into W_V/W_K (e-BPTT)."""
+        from sili_quartz.models.ebptt import credit
+
+        st = state.detach()
+        if self.credit == "bptt":
+            return st
+        if self.credit == "trace":
+            E_V, E_K = st.E_V, st.E_K
+        else:
+            ck, x, ce, xk = st.buf
+            E_V, E_K = torch.einsum("bni,bnj->bij", ck, x), torch.einsum("bni,bnj->bij", ce, xk)
+        if not self.credit_k:
+            E_K = torch.zeros_like(E_K)
+        u = None
+        if st.noise is not None:
+            u = 0.5 * (1 + torch.erf(st.noise[:, self.d_in :] / 2**0.5))
+        st.M = credit(st.M, self.W_V.weight, self.W_K.weight, E_V, E_K,
+                      self.credit_density, self.credit_score, u)
+        return st
 
     @torch.no_grad()
     def _buffer_keys(self, k_all: Tensor, prev: MemoryState, out: MemoryState) -> None:
