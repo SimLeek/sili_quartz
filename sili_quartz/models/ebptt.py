@@ -81,6 +81,34 @@ def credit(M, w_v, w_k, E_V, E_K, density: float = 1.0, score: str = "grad", u: 
     return _Credit.apply(M.detach(), w_v, w_k, E_V, E_K, density, score, u)
 
 
+def _gaussian_kernel(sigma: float, device=None) -> Tensor:
+    r = max(1, int(3 * sigma + 0.5))  # same radius smoothed_noise pads by
+    x = torch.arange(-r, r + 1, device=device, dtype=torch.float32)
+    k = torch.exp(-0.5 * (x / sigma) ** 2)
+    return k / k.sum()
+
+
+def smoothed_noise(shape, sigmas, generator: torch.Generator | None = None, device=None) -> Tensor:
+    """White gaussian noise of `shape`, smoothed by a gaussian of std
+    sigmas[i] along each axis i (0 = leave the axis white), then normalized to
+    zero mean, unit variance. (T, side, side) with sigmas (s_t, s_s, s_s) is a
+    stack of 2D slices z = t through a smooth 3D gaussian field; (T, dim) with
+    (s_t, 0) is temporal persistence only. Separable conv1d per axis over
+    white noise generated with a kernel-radius margin, keeping only the valid
+    part: stationary, no edge effects, no preferred position."""
+    radii = [max(1, int(3 * s + 0.5)) if s > 0 else 0 for s in sigmas]
+    big = [n + 2 * r for n, r in zip(shape, radii, strict=True)]
+    x = torch.randn(*big, generator=generator, dtype=torch.float32).to(device)
+    for axis, (sigma, r) in enumerate(zip(sigmas, radii, strict=True)):
+        if r == 0:
+            continue
+        k = _gaussian_kernel(sigma, device=x.device)
+        moved = x.movedim(axis, -1)
+        out = torch.nn.functional.conv1d(moved.reshape(-1, 1, moved.shape[-1]), k.view(1, 1, -1))
+        x = out.reshape(*moved.shape[:-1], -1).movedim(-1, axis)
+    return (x - x.mean()) / x.std().clamp_min(1e-8)
+
+
 @contextmanager
 def substitute_saved(target: Tensor, replacement: Tensor):
     """Inside this block, ops that save `target` for backward get `replacement`

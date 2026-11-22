@@ -54,7 +54,7 @@ work) and #19 (capacity cliff), since the kernel port must preserve them.
 
 | # | property | test | status |
 |---|---|---|---|
-Rows 27 and 30–32 failed or did not separate; they moved to [JOURNAL.md](JOURNAL.md).
+Rows 27, 31 and 32 were tested and do not hold; they moved to [JOURNAL.md](JOURNAL.md).
 
 | 26 | A (attention only) cannot do beyond-window recall | [`test_no_memory_cannot_do_long_gap`](../tests/test_mac.py) | measured 0.056 vs baseline 0.071 |
 | 28 | B+C (Combined) learns it | [`test_family_learns_long_gap_recall[combined]`](../tests/test_mac.py) | **passes** (800 steps) |
@@ -68,6 +68,8 @@ it is the reason the sili substrate (memory as weights) is the bet. Open: does
 B bind with more depth, a cross-attention write head, or m·d ≫ bindings? Not
 pursued now; C and B+C are the path.
 
+
+| 30 | B+C beats C under long training | `docs/results/2026-11-17-omega-forty-k-seeds.md` | **open, still investigating**: not separated, neither shown nor ruled out. 7 seeds × 4 arms. Without omega combined is narrowly ahead (55.9 ± 1.5 vs 55.2 ± 1.8, 4 of 6 paired). With omega titans is ahead on the mean (56.9 ± 2.0, 7/7 train vs 56.4 ± 2.1, 6/7), combined on worst case (window min 49.7 vs 44.3). All three kept for the sili port. |
 
 **Long-run method note.** Equal wall-clock gave unequal steps (titans 45k on
 the 1660 Ti, combined 81k on the 2060, rmt 450k on the P40): compare by step,

@@ -99,7 +99,9 @@ a smaller dense matmul: credit backward 2p·d³ per chunk instead of 2d³. Raw C
   ≥ 0.97 with no fall-back; its curves rise like the dense carry's.
 - Every arm that scores by |G| has at least one seed that stalls or collapses
   (sbw_grad_p25 s1 never leaves chance; sbw_gn_p25 s0 reaches 0.54, then falls
-  to chance after step 1500; sbw_gn_p125 s0 peaks at 0.35, ends at 0.09).
+  to chance after step 1500; sbw_gn_p125 s0 peaks at 0.35, ends at 0.09). Its
+  choice is biased toward a few dims; that the bias causes the stalls is not
+  shown.
 - n = 3 per arm. GPU peaks: laptop 66 °C, 1080 55, 2060 52, 1660 SUPER 51.
 
 ## More seeds: noise-scored sparse credit vs the dense carry

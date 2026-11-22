@@ -5,36 +5,49 @@ import pytest
 import torch
 
 from sili_quartz.models import TitansMAC
-from sili_quartz.models.ebptt import credit, substitute_saved
+from sili_quartz.models.ebptt import credit, smoothed_noise, substitute_saved
 from sili_quartz.models.memory import TitansMemory
 
 
 def _starmap(T, side, rng, stars=5):
-    """T frames of a side x side sky, a few random unit stars each."""
+    """T frames of a side x side sky, a few random unit stars each. No temporal
+    association: every frame's stars are drawn independently."""
     x = np.zeros((T, side * side), np.float32)
     for t in range(T):
         x[t, rng.choice(side * side, stars, replace=False)] = 1.0
     return torch.from_numpy(x)
 
 
-def _blob_walk(T, side, rng, sigma=1.5):
-    """A 2D gaussian blob stepping across the grid, z = t, plus gaussian noise."""
-    yy, xx = np.mgrid[0:side, 0:side]
-    c = rng.uniform(0, side, 2)
-    v = rng.normal(0, 1, 2)
-    out = []
-    for _ in range(T):
-        c = (c + v) % side
-        f = np.exp(-((yy - c[0]) ** 2 + (xx - c[1]) ** 2) / (2 * sigma**2))
-        out.append(f.ravel() + 0.05 * rng.normal(size=side * side))
-    return torch.tensor(np.array(out), dtype=torch.float32)
+def _gen(rng):
+    return torch.Generator().manual_seed(int(rng.integers(2**31)))
 
 
 PATTERNS = {
     "starmap": _starmap,
-    "blob_walk": _blob_walk,
-    "noise": lambda T, side, rng: torch.from_numpy(rng.normal(size=(T, side * side)).astype(np.float32)),
+    # 2D slices z = t through a smooth 3D gaussian noise field
+    "noise_3d_slice": lambda T, side, rng: smoothed_noise((T, side, side), (1.5,) * 3, _gen(rng)).flatten(1),
+    # temporal persistence only, no spatial structure
+    "noise_temporal": lambda T, side, rng: smoothed_noise((T, side * side), (2.0, 0.0), _gen(rng)),
+    "noise_white": lambda T, side, rng: torch.from_numpy(rng.normal(size=(T, side * side)).astype(np.float32)),  # noqa: E501
 }
+
+
+def test_smoothed_noise_is_persistent_in_time_and_unbiased_in_space():
+    g = torch.Generator().manual_seed(0)
+    z = smoothed_noise((400, 8, 8), (2.0, 1.5, 1.5), g)
+    assert abs(z.mean().item()) < 1e-5 and abs(z.std().item() - 1) < 1e-4
+
+    def lag_corr(a, lag):
+        return torch.corrcoef(torch.stack([a[:-lag].flatten(), a[lag:].flatten()]))[0, 1].item()
+
+    assert lag_corr(z, 1) > 0.85  # neighbouring slices are similar...
+    assert abs(lag_corr(z, 30)) < 0.1  # ...distant ones are not
+    zz = smoothed_noise((4000, 8, 8), (2.0, 1.5, 1.5), g)  # no preferred position:
+    v = zz.var(dim=0)  # every position has the same variance (no edge or corner bias)
+    assert v.max() / v.min() < 1.3 and zz.mean(dim=0).abs().max() < 0.15
+    w = smoothed_noise((400, 64), (2.0, 0.0), g)
+    assert lag_corr(w, 1) > 0.85
+    assert abs(torch.corrcoef(w.T)[0, 1:].mean().item()) < 0.1  # dims independent
 
 
 @pytest.mark.parametrize("pattern", list(PATTERNS))

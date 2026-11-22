@@ -37,7 +37,7 @@ No learning-rate schedules as fixes: that is an oracle solution.
 No torch step-speed work: speed is not the limit now; speedups happen in sili.
 No further B/C-family literature to fold in (user, 2026-11-16).
 
-## 1b. Long-run B+C vs C — Done: combined leads → [details](#done-1b)
+## 1b. Long-run B+C vs C — runs done, not separated (ledger row 30, open) → [details](#done-1b)
 
 ## 2. ATLAS switches — omega kept, poly2 dropped → [details](#done-2)
 
@@ -54,13 +54,16 @@ cost) rather than a pass/fail "better". Record both numbers in the ledger.
   the in-window curve.
   - **Torch first pass (branch research/e-bptt-fake-backprop, 2026-11-17):**
     `models/ebptt.py`. Overriding a saved input during backward works
-    (`saved_tensors_hooks`; tested on starmap / blob-walk z=t / noise inputs).
+    (`saved_tensors_hooks`; tested on starmap (no temporal association), 2D slices of smoothed 3D gaussian noise, temporal-only smoothed noise, white noise).
     On row 15 with the state detached every chunk: credit from a plain sum of
     remembered inputs 0.268, buffer 0.212. With the V-side Jacobian carried
     (I − c k kᵀ): trace 0.969, buffer-16 0.891 (pass). W_V-only credit 0.061.
     Sparse credit backward over a noise-chosen 1/4 of memory dims matches the
-    dense credit (9/11 vs 6/8 seeds ≥ 0.95); |G|-chosen is biased and stalls
-    (Bend proof: sili__new bend_proofs/noise_selected_credit). Per-chunk
+    dense credit (9/11 vs 6/8 seeds ≥ 0.95). |G|-chosen stalls on 2 of 3 seeds
+    and its choice is biased (measured: top 8 dims take 29 % of picks), but
+    that the bias CAUSES the stall is not shown. The Bend proof
+    (sili__new bend_proofs/noise_selected_credit) only shows the noise
+    choice is unbiased; error feedback is the known fix for biased top-k. Per-chunk
     backward (`stream_backward`) makes memory flat in T: 22 MiB at T = 28…1036
     vs 45…1582 MiB for full BPTT. Row-15 test at constant memory: 0.980.
     Cost axis: steps to 0.95 vs full BPTT ×5–10 at gap 16; at gap 64 BPTT 3/3
@@ -88,15 +91,26 @@ even a small dose of neuron energy RL in the model that *generates* the data
 Not stochastic annealing: that rescues the optimizer state in self-training.
 Here the next model trains on outputs of a model whose energy RL is active.
 
-1. **Torch energy.** sili's `EnergyDynamics` (sili__new `sili/energy.py`) has
-   no torch equivalent: discrete gating, an abs backward, and a KL aux loss
-   (sili__new `tests/integration/test_transformer.py:8-9`). Port it as a
-   custom `autograd.Function` + module, with unit tests that it matches
-   sili's forward/backward on a fixed input. (User mentioned a torch version
-   exists; not found by grep, so check first.)
-2. **The chain.** Generation 0 = "some model": a pretrained LM, kept outside
-   the codebase (MiniCPM5-1B-Base is at `~/claude_code/MiniCPM5-1B-Base`; any
-   small causal LM works). Generation i+1 is trained (LM loss, partly mixed
+1. **Torch energy.** There is an older torch version; sili's `EnergyDynamics`
+   (sili__new `sili/energy.py`) is more advanced, so port the sili one. It
+   should be mostly a library rename sili → torch. The one real difference:
+   sili's `abs` backward uses slope 1 at exactly 0 (`sili/cpu.py`
+   `abs_backward`, so neurons can wake from zero), where torch uses 0. Use
+   `torch.where(x == 0, x, x.abs())`: value 0, gradient 1 at zero. Unit tests:
+   forward/backward match sili on fixed inputs, including h = 0.
+2. **The chain.** Generation 0 = "some model", kept outside the codebase:
+   a recurrent transformer, Qwen3.5-0.8B or Qwen3.5-2B (hybrid: 3 linear-
+   attention layers per full-attention layer). Recurrent states are more
+   sensitive to small floating-point errors, so these are the harder, more
+   useful case (also harder to quantize). The user's download is
+   GameScaling-0.8B (`~/claude_code/GameScaling-0.8B`, a Qwen3.5-0.8B
+   continued-pretraining finetune on games: keyboard/mouse control + vision,
+   useful later with robonet). Work on a COPY and keep the original as is
+   (slow to re-download). 0.8B trains on the P40 at full fp32 (weights are
+   bf16 on disk; the P40 has no fast bf16/fp16 math). For fp16 training on
+   the P40: keep fp16 in global memory, convert to fp32 in local memory per
+   op. To test later: A_lora ⊙ hadamard(B_low_bit) + C_lora for low-bit
+   adaptation of the recurrent parts. Generation i+1 is trained (LM loss, partly mixed
    with the energy RL aux loss) on text sampled from generation i. Fixed real
    held-out text for evaluation.
 3. **Collapse metrics, per generation:** frequency of rare tokens (mass in the
@@ -164,7 +178,7 @@ Result: **B cannot bind; C and B+C are the path.** Ledger rows 18/19, 29;
   (`tests/test_mac.py::test_family_capacity_probe`).
 
 <a id="done-1b"></a>
-## 1b. Long-run B+C vs C (PR #3) — combined leads (JOURNAL row 30)
+## 1b. Long-run B+C vs C (PR #3) — combined narrowly ahead; still open (ledger row 30)
 - 230-min runs, 32-pair probe: titans 30.2 vs combined 30.7 of 32 (windowed).
   [docs/results/2026-11-15-long-family-runs.md](docs/results/2026-11-15-long-family-runs.md)
 - Equal 40k steps, 128-key vocab, train 16 pairs, stress 64 pairs: 30–40k

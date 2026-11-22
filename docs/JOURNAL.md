@@ -1,7 +1,9 @@
 # Journal: properties that turned out not to hold
 
-These were ledger rows in `PROPERTIES.md`. Each one failed, or the data did not
-separate the arms, so they are no longer properties the models must have. The
+These were ledger rows in `PROPERTIES.md`. Each one was tested and does not
+hold ("not true"), so they are no longer properties the models must have.
+Properties that are only not yet shown ("not proven true") stay in the ledger
+as open. The
 numbers and tests stay here as the record. Row numbers are the old ones, so
 older results docs still resolve.
 
@@ -11,10 +13,6 @@ older results docs still resolve.
 
 The strict-xfail test `test_family_learns_long_gap_recall[rmt]` stays in
 `tests/test_mac.py`: if RMT ever starts binding, it will flip and say so.
-
-## Row 30: B+C beats C under long training
-
-**not separated**: 7 seeds × 4 arms. Without omega combined is narrowly ahead (55.9 ± 1.5 vs 55.2 ± 1.8, 4 of 6 paired). With omega titans is ahead on the mean (56.9 ± 2.0, 7/7 train vs 56.4 ± 2.1, 6/7), combined on worst case (window min 49.7 vs 44.3). All three kept for the sili port.
 
 ## Row 31: poly2 + omega trains at scale
 
