@@ -124,6 +124,29 @@ The generational pilot (`examples/model_collapse.py`) comes before the dialogue.
    n + k rounds (k a fixed budget) at some dose, structure kept. Seeds = same
    program run N times. Results to `docs/results/`, ledger row.
 
+## 2d. Minimal energy controller (before sleep, user 2026-11-22)
+A fixed energy dose is wrong most of the time: raise it to try new things and
+to learn new things, lower it to focus and get accurate output. Build the
+smallest controller that sets the dose, working before 3 and 4.
+- **Signals measured so far** ([energy vs loops](docs/results/2026-11-22-energy-vs-loops.md)):
+  - repetition / low surprise: energy switches off 2 to 13x more neurons on a
+    loop than on real text, a free "bored" signal → raise the dose;
+  - high surprise / incoherence → lower it;
+  - an external reward present → lower it (energy RL added nothing on
+    dense-reward MQAR);
+  - amortized health: dormant fraction, rank collapse, branching ratio
+    (`BranchingRatioTracker` can already set energy's density per call) →
+    raise it while learning.
+- **First test:** the loop test with a surprise-targeting dose, against fixed
+  doses and against Mirostat (Basu et al., ICLR 2021), which targets surprise
+  through token temperature: the strongest temperature-style baseline.
+- **Then:** the collapse loop (2c) with the controller in place of a fixed cost.
+- **When this lands, check whether 6 (energy for RL task solving) belongs
+  inside it.** Note the two are different "energies": 2c/2d is sili's
+  per-neuron homeostatic energy; the Energy-Based Reasoners paper means a
+  learned scalar over reasoning states, minimized by looping. That scalar may
+  still be a useful signal for the controller (converged → focus).
+
 ## 3. Stochastic annealing + health pass: "sleep"
 - **Sleep window (≤ 8 h/day, once a day) = annealing + health passes that
   improve the optimizer state.** Sparse backprop runs during BOTH wake and
@@ -199,7 +222,9 @@ headers or read from the call sites.
 
 ## 6. Energy for RL task solving
 Get energy working for RL task solving too. Reading: "Energy-Based Reasoners:
-Your Recurrent Reasoner Should Be an Energy-Based Model".
+Your Recurrent Reasoner Should Be an Energy-Based Model" (Chen, Gladstone, Li,
+Ji, Du; arXiv 2611.08977). Its "energy" is a learned scalar over latent
+reasoning states, not sili's neuron energy: see 2d, which may absorb this.
 
 ## 7. Random top-k with error feedback
 Implement and test random top-k with error feedback on small MQAR recurrent
@@ -209,6 +234,12 @@ exist for this setting, or not?
 - e-BPTT items still open: clean in-window test (episode inside one chunk);
   more steps / seeds at gap 64; larger d for the wall-time saving; K-side
   Jacobian.
+
+## Finale: train on new video games
+Test by training on video games the model hasn't seen: actual games, not
+Atari. robonet (general remote-desktop control) or whatever per-game harness is
+simplest for one or more games; GameScaling-0.8B already has keyboard/mouse +
+vision. Choose the harness when we get here.
 
 ## Backlog: integration tests + advancements from other models
 - Omega distractor test (row 20), chunk sweep, MIRAS losses, MLP memory, Muon,
