@@ -130,9 +130,12 @@ Not stochastic annealing: that rescues the optimizer state in self-training.
    rows while backward adds gradient + optimizer updates to another subset.
 2. fp4 hadamard working in VRAM on an MQAR example.
 3. A million × million recurrent transformer block, backprop through a random
-   subset of rows where the subset is time-related (nearby time entries are
+   subset of ~1000 rows where the subset is time-related (nearby time entries are
    chosen together, as in e-BPTT's smoothed noise). Backed by the sili database
-   in HDD memory.
+   in HDD memory. ~1000 rows to keep reads/writes to around page size. both row
+   reads/writes and seeking to the next selected row should be sequential.
+   The networks should be very sparse, with 1000-10000 synapses,
+   to limit to 20-40MB IO per step.
 
 ## 5. Port kernels
 Port the required kernels and code one by one, each passing the same tests
