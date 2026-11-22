@@ -26,6 +26,7 @@ class EnergySite:
     module: nn.Module
     mean: float  # mean |h / scale| on ordinary input: energy is neutral there
     scale: float = 1.0
+    cost: float | None = None  # this site's own cost, else NeuronEnergy's
 
 
 def first_tensor(output) -> Tensor:
@@ -83,10 +84,11 @@ class NeuronEnergy:
         ]
 
     def _new_state(self, index: int, site: EnergySite, h: Tensor) -> EnergyDynamics:
-        drive = self.cost * site.mean  # neutral on average
+        cost = self.cost if site.cost is None else site.cost
+        drive = cost * site.mean  # neutral on average
         ed = EnergyDynamics(
             drive,
-            self.cost,
+            cost,
             precision=0.04,
             density=0.5,
             p=1.0,  # pretrained and dense: energy only fires and shuts off

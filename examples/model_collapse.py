@@ -51,6 +51,8 @@ class Arm:
     sites: tuple[str, ...] = ("mlp",)
     decay_div: float = 4  # decay = drive / decay_div
     noise: float = 0.0  # instead of energy: white noise of this x site mean (damage-matched control)
+    site_costs: tuple[float, ...] = ()  # one cost per site, else `cost` everywhere
+    penalty: float = 1.0  # repetition penalty on the teacher's sampling (a token-level method)
 
 
 ARMS = (
@@ -81,10 +83,15 @@ SITE_ARMS = (
     Arm("greedy_attn_0.02", 0.0, 0.02, sites=("attn",), decay_div=40),
     Arm("greedy_resid_0.01", 0.0, 0.01, sites=("resid",), decay_div=40),
     Arm("greedy_all_0.003", 0.0, 0.003, sites=ALL_SITES, decay_div=40),
+    Arm("greedy_mlp0.03_attn0.01", 0.0, 0.03, sites=("mlp", "attn"), decay_div=40, site_costs=(0.03, 0.01)),
     Arm("greedy_noise_0.35", 0.0, sites=ALL_SITES, noise=0.35),
+    Arm("greedy_penalty_1.5", 0.0, penalty=1.5),
+    Arm("real_mlp0.03_attn0.01", 0.0, 0.03, True, ("mlp", "attn"), 40, site_costs=(0.03, 0.01)),
     Arm("t0.9", 0.9),
+    Arm("t1.0", 1.0),
     Arm("t0.9_mlp_0.05", 0.9, 0.05, sites=("mlp",), decay_div=40),
     Arm("t0.9_attn_0.02", 0.9, 0.02, sites=("attn",), decay_div=40),
+    Arm("t0.9_mlp0.03_attn0.01", 0.9, 0.03, sites=("mlp", "attn"), decay_div=40, site_costs=(0.03, 0.01)),
 )
 SUITES = {"pilot": ARMS, "sites": SITE_ARMS}
 
@@ -118,12 +125,13 @@ def site_means(model, ids: torch.Tensor) -> dict[str, list[float]]:
     return {kind: means[i * n : (i + 1) * n] for i, kind in enumerate(ALL_SITES)}
 
 
-def energy_sites(model, means: dict[str, list[float]], kinds: tuple[str, ...]) -> list[EnergySite]:
+def energy_sites(model, means: dict[str, list[float]], kinds: tuple[str, ...], costs=()) -> list[EnergySite]:
     """Every site is scaled to its layer's MLP activations, so a cost is the same dose everywhere."""
     sites = []
-    for kind in kinds:
+    for i, kind in enumerate(kinds):
+        cost = costs[i] if costs else None
         for module, mean, ref in zip(site_modules(model, kind), means[kind], means["mlp"], strict=True):
-            sites.append(EnergySite(module, ref, scale=1.0 if kind == "mlp" else mean / ref))
+            sites.append(EnergySite(module, ref, scale=1.0 if kind == "mlp" else mean / ref, cost=cost))
     return sites
 
 
@@ -158,20 +166,27 @@ class SiteNoise:
 
 
 @torch.no_grad()
-def generate(model, prompts: torch.Tensor, temperature: float, rng, max_temp: int) -> torch.Tensor:
+def generate(model, prompts: torch.Tensor, temperature: float, rng, max_temp: int, penalty: float = 1.0):
     device = next(model.parameters()).device
     rows = []
     for batch in prompts.split(BATCH):
         check_temperature(max_temp)
         out = model(input_ids=batch.to(device), use_cache=True)
         made = []
+        seen = torch.zeros(len(batch), out.logits.shape[-1], dtype=torch.bool, device=device)
+        seen[torch.arange(len(batch), device=device)[:, None], batch.to(device)] = True
         for i in range(BLOCK):
             logits = out.logits[:, -1].float()
+            if penalty != 1.0:  # CTRL / Hugging Face repetition penalty on every token already used
+                logits = torch.where(
+                    seen, torch.where(logits > 0, logits / penalty, logits * penalty), logits
+                )
             if temperature:
                 token = torch.multinomial((logits / temperature).softmax(-1), 1, generator=rng)
             else:
                 token = logits.argmax(-1, keepdim=True)
             made.append(token)
+            seen[torch.arange(len(batch), device=device), token[:, 0]] = True
             if i + 1 < BLOCK:
                 out = model(input_ids=token, past_key_values=out.past_key_values, use_cache=True)
         rows.append(torch.cat([batch, torch.cat(made, 1).cpu()], 1))
@@ -308,10 +323,13 @@ def main() -> None:
                     )
                 elif arm.cost:
                     teach_energy = NeuronEnergy(
-                        energy_sites(teacher, means, arm.sites), arm.cost, args.seed, decay_div=arm.decay_div
+                        energy_sites(teacher, means, arm.sites, arm.site_costs),
+                        arm.cost,
+                        args.seed,
+                        decay_div=arm.decay_div,
                     )
                     learn_energy = NeuronEnergy(
-                        energy_sites(student, means, arm.sites),
+                        energy_sites(student, means, arm.sites, arm.site_costs),
                         arm.cost,
                         args.seed + 100,
                         train=True,
@@ -321,7 +339,7 @@ def main() -> None:
             data = (
                 real[gen]
                 if arm.real
-                else generate(teacher, real[gen][:, :BLOCK], arm.temperature, rng, args.max_temp)
+                else generate(teacher, real[gen][:, :BLOCK], arm.temperature, rng, args.max_temp, arm.penalty)
             )
             lm = train_epoch(student, opt, data, learn_energy, args.aux_weight, order, args.max_temp)
             row = {"arm": arm.name, "generation": gen, "train_lm": lm}

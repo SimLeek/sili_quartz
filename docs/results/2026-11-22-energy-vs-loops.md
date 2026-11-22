@@ -106,8 +106,8 @@ What it shows (one run per prompt, so read it as direction, not size):
 - **MLP alone can break loops** once decay lets energy build up, which
   contradicts my earlier guess. It can also *create* a loop on real text.
 - **The residual is the worst site:** no loop break before it drops spaces.
-- **Combining sites is worse than either alone.** There is no dose at which
-  all three break loops without gibberish.
+- **All three sites together** found no dose that breaks loops without
+  gibberish. MLP + attention at lower doses does (below).
 - The CPU training path works with all three sites (gradients reach all 320
   parameters, all finite). Peak memory rose 12.3 → 16.6 GiB on CPU for 4 × 128
   tokens; GPU still to measure.
@@ -115,3 +115,38 @@ What it shows (one run per prompt, so read it as direction, not size):
 Next: the site sweep (`--suite sites`), queued behind the pilot, with
 damage-matched noise arms and the student's free-running repetition logged
 every generation.
+
+## MLP + attention, and token temperature (same day, follow-up)
+
+Every arm is scored on its own free-running 48 tokens. Loops: distinct-3 on
+three repeated phrases (under 0.5 = still repeating). Real text: distinct-3 and
+the unmodified model's perplexity on what was written (the true next 48 tokens
+score 8 to 20; loops score near 2; gibberish in the thousands). Temperature
+arms are the mean of 3 seeds; everything else is one run.
+
+| arm | loops broken (distinct-3 of 3 loops) | real text: distinct-3 / perplexity of what it wrote |
+|---|---|---|
+| greedy | 0 of 3 (0.17, 0.09, 0.46) | 0.94-1.0 / 2.4-3.9 |
+| T 0.7 | 0 of 3 | 0.95-1.0 / 3.9-8.6 |
+| T 1.0 | 0 of 3 (loop 1: 0.45) | 0.97-1.0 / 17-47 |
+| T 1.3 | 2 of 3, as gibberish | 1.0 / 11,600-27,000 |
+| repetition penalty 1.2 | 0 of 3 | 0.94-1.0 / 2.9-6.2 |
+| repetition penalty 1.5 | 1 of 3 (the long sentence) | 0.98-1.0 / 8-23 |
+| mlp .05 | 2 of 3 | 0.17-1.0 / 1.7-11 (one real passage looped) |
+| attn .02 | 3 of 3, garbled words | 0.80-1.0 / 5.8-30 |
+| **mlp .03 + attn .01** | **3 of 3 (1.0, 0.91, 1.0), into readable text** | **0.87-0.91 / 42-89** |
+| mlp .02 + attn .01 | 2 of 3 | 0.57-1.0 / 7.7-55 |
+| mlp .03 + attn .005 | 1 of 3 (0.70, 0.37, 0.78) | 0.22-1.0 / 3.6-13 |
+| mlp .05 + attn .01 | 2 of 3, with markup | 0.41-0.94 / 10-97 |
+| mlp .01 + attn .015 | 3 of 3, one garbled | 0.15-0.87 / 3.3-43 (one real passage looped) |
+
+- Token temperature cannot break these loops: the model puts ~0.998 on the
+  next loop token, so sampling at T ≤ 1 keeps it. T 1.3 breaks them only by
+  destroying everything else, as in TODO 2c.
+- A repetition penalty is the strongest token-level baseline here, and it
+  broke only the loop with the longest period.
+- Energy carries state, so it can push against a loop that sampling can't.
+  mlp .03 + attn .01 broke all three into readable text, at a real-text cost
+  a bit above T 1.0 (perplexity 42-89 vs 17-47). That makes it the best pair
+  found, not a tuned optimum: neighbouring doses are erratic, one run each.
+- The site sweep now includes this pair, repetition penalty 1.5 and T 1.0.

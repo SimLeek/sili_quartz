@@ -129,6 +129,14 @@ def test_small_decay_div_lets_energy_settle_instead_of_building_up(decay_div, re
     assert bool(shut_off) is reaches
 
 
+def test_a_site_can_have_its_own_cost():
+    a, b = nn.Identity(), nn.Identity()
+    energy = NeuronEnergy([EnergySite(a, 0.8, cost=0.4), EnergySite(b, 0.8)], cost=0.01)
+    a(torch.zeros(1, 1, 4, device=DEVICE))
+    b(torch.zeros(1, 1, 4, device=DEVICE))
+    assert energy.states[0][0].activation_cost == 0.4 and energy.states[1][0].activation_cost == 0.01
+
+
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
 def test_scaled_site_keeps_the_model_dtype(dtype):
     site = nn.Identity()
