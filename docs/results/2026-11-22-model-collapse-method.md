@@ -24,12 +24,17 @@ Written before the pilot's results. Script: `examples/model_collapse.py`.
 - 2060 = teacher (fp16), P40 = student (fp32); GameScaling-0.8B work copy.
 - Generation 0: one epoch on real text. Generations 1 to 10: the teacher writes
   128 × 64-token continuations, the student trains one epoch on them, and the
-  teacher takes the student's weights.
+  teacher takes the student's weights. Each generation uses fresh real
+  blocks as prompts and as the real control's data.
+  (Amended before any energy arm ran: the first launch, df90344, reused the
+  same 128 blocks, and its *real* control went 20.7 → 27.3 → 37.0 → 76.4 at
+  generations 0, 1, 2, 6 from overfitting alone, so it was stopped in that
+  first arm. The papers avoid this with ~36k documents.)
 - Energy on both models: MLP activations of layers 2, 6, 10, 14, 18, 22; p = 1;
   drive = cost × mean |h|; decay = drive/4; reset to zero on fire; starts at
   rest; accumulates across batches and generations. Student loss = LM + 1e-3 ×
   aux per token. Evaluation always has energy off.
-- Arms: real control (retrain on the same real text), greedy, T .9, T 1.0, and
+- Arms: real control (keep training on fresh real text), greedy, T .9, T 1.0, and
   energy cost .01 / .1 on greedy and on T .9. One seed: a pilot, not a verdict.
 
 **Forgetting prevented**, fixed in advance: with
@@ -38,7 +43,7 @@ Written before the pilot's results. Script: `examples/model_collapse.py`.
     prevented = 1 − rise(energy) / rise(same sampling, energy off)
 
 1 = no forgetting, 0 = no help, negative = energy made it worse. The real
-control's rise is the part that is just over-training on 128 samples. Report it
+control's rise is whatever is not due to synthetic data. Report it
 next to distinct-3-gram, looping and rare-token mass, because diversity alone
 can rise while quality falls (Drayson et al.).
 

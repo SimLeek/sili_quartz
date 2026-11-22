@@ -9,8 +9,10 @@ A small copy of the published method, for "some model" (any local Qwen3.5 dir):
 - Forgetting is the rise in perplexity on fixed real test text, energy off.
 
 Each generation the teacher (GPU 1, fp16) writes, the student (GPU 0, fp32)
-trains, then the teacher takes the student's weights. The student is never
-reset, so this measures forgetting as well as collapse. With energy, both
+trains, then the teacher takes the student's weights. Every generation uses
+fresh blocks of real text as prompts (and as the real control's data): a few
+hundred reused blocks overfit, which looks like forgetting. The student is
+never reset, so this measures forgetting as well as collapse. With energy, both
 models run it and their energy accumulates, never reset within an arm.
 
     python examples/model_collapse.py --model DIR --data DIR --out DIR
@@ -228,7 +230,8 @@ def main() -> None:
         ids = tok(text[:2_000_000], add_special_tokens=False).input_ids
         return torch.tensor(ids[: count * 2 * BLOCK]).view(count, 2 * BLOCK), ids
 
-    real, train_tokens = blocks("train", args.samples)
+    real_blocks, train_tokens = blocks("train", args.samples * (args.generations + 1))
+    real = real_blocks.split(args.samples)  # one fresh set per generation
     test, _ = blocks("test", args.test_samples)
     counts = torch.bincount(torch.tensor(train_tokens), minlength=config.vocab_size).float()
     by_count = counts.argsort(descending=True)
@@ -256,7 +259,7 @@ def main() -> None:
         rng = torch.Generator("cuda:1").manual_seed(args.seed)
         set_weights(student, original)
         opt = torch.optim.AdamW(student.parameters(), lr=args.lr)
-        train_epoch(student, opt, real, None, 0.0, order, args.max_temp)  # generation 0: real text
+        train_epoch(student, opt, real[0], None, 0.0, order, args.max_temp)  # generation 0: real text
         base = perplexity(student, test, BLOCK)
         rows.append({"arm": arm.name, "generation": 0, "test_perplexity": base})
         print(json.dumps(rows[-1]), flush=True)
@@ -271,7 +274,9 @@ def main() -> None:
                     teach_energy = NeuronEnergy(teacher, means, arm.cost, args.seed, train=False)
                     learn_energy = NeuronEnergy(student, means, arm.cost, args.seed + 100, train=True)
             data = (
-                real if arm.real else generate(teacher, real[:, :BLOCK], arm.temperature, rng, args.max_temp)
+                real[gen]
+                if arm.real
+                else generate(teacher, real[gen][:, :BLOCK], arm.temperature, rng, args.max_temp)
             )
             lm = train_epoch(student, opt, data, learn_energy, args.aux_weight, order, args.max_temp)
             row = {"arm": arm.name, "generation": gen, "train_lm": lm}
