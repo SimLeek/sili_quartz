@@ -13,10 +13,12 @@ trains, then the teacher takes the student's weights. Every generation uses
 fresh blocks of real text as prompts (and as the real control's data): a few
 hundred reused blocks overfit, which looks like forgetting. The student is
 never reset, so this measures forgetting as well as collapse. With energy, both
-models run it on every layer's MLP neurons, and their energy accumulates,
-never reset within an arm.
+models run it on every layer (which outputs is the arm's `sites`: MLP neurons,
+attention, residual), and their energy accumulates, never reset within an arm.
+`free_*` is the student running free, greedy, energy off: perplexity is
+teacher-forced and cannot see repetition.
 
-    python examples/model_collapse.py --model DIR --data DIR --out DIR
+    python examples/model_collapse.py --model DIR --data DIR --out DIR [--suite sites]
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-from sili_quartz.energy import EnergyDynamics
+from sili_quartz.energy_hooks import EnergySite, NeuronEnergy, mean_abs_outputs
 
 BLOCK = 64  # prompt tokens, and continuation tokens
 BATCH = 8
@@ -46,6 +48,9 @@ class Arm:
     temperature: float  # 0 = greedy
     cost: float = 0.0  # energy activation_cost, 0 = no energy
     real: bool = False  # train on the real continuations instead
+    sites: tuple[str, ...] = ("mlp",)
+    decay_div: float = 4  # decay = drive / decay_div
+    noise: float = 0.0  # instead of energy: white noise of this x site mean (damage-matched control)
 
 
 ARMS = (
@@ -62,6 +67,27 @@ ARMS = (
     Arm("t1.0", 1.0),
 )
 
+ALL_SITES = ("mlp", "attn", "resid")
+# Second sweep: where energy sits, with a decay that lets it build up. Doses from
+# docs/results/2026-11-22-energy-vs-loops.md: each breaks short loops at ~1-1.4 nats
+# of damage to real text; noise .35 costs about as much and does not.
+SITE_ARMS = (
+    Arm("real_control", 0.0, real=True),
+    Arm("real_mlp_0.05", 0.0, 0.05, True, ("mlp",), 40),
+    Arm("real_attn_0.02", 0.0, 0.02, True, ("attn",), 40),
+    Arm("real_noise_0.35", 0.0, real=True, sites=ALL_SITES, noise=0.35),
+    Arm("greedy", 0.0),
+    Arm("greedy_mlp_0.05", 0.0, 0.05, sites=("mlp",), decay_div=40),
+    Arm("greedy_attn_0.02", 0.0, 0.02, sites=("attn",), decay_div=40),
+    Arm("greedy_resid_0.01", 0.0, 0.01, sites=("resid",), decay_div=40),
+    Arm("greedy_all_0.003", 0.0, 0.003, sites=ALL_SITES, decay_div=40),
+    Arm("greedy_noise_0.35", 0.0, sites=ALL_SITES, noise=0.35),
+    Arm("t0.9", 0.9),
+    Arm("t0.9_mlp_0.05", 0.9, 0.05, sites=("mlp",), decay_div=40),
+    Arm("t0.9_attn_0.02", 0.9, 0.02, sites=("attn",), decay_div=40),
+)
+SUITES = {"pilot": ARMS, "sites": SITE_ARMS}
+
 
 def check_temperature(limit: int) -> None:
     cmd = ["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader"]
@@ -74,78 +100,61 @@ def continuation_loss(logits: torch.Tensor, ids: torch.Tensor, first: int) -> to
     return F.cross_entropy(logits[:, first - 1 : -1].float().flatten(0, 1), ids[:, first:].flatten())
 
 
-class NeuronEnergy:
-    """EnergyDynamics on every layer's MLP activations, stepped over tokens, one state per stream."""
+def site_modules(model, kind: str) -> list:
+    layers = model.model.layers
+    if kind == "mlp":
+        return [layer.mlp.act_fn for layer in layers]
+    if kind == "attn":  # what attention adds to the residual (a linear or a full layer)
+        return [getattr(layer, "linear_attn", None) or layer.self_attn for layer in layers]
+    if kind == "resid":  # what the next layer receives
+        return list(layers)
+    raise ValueError(f"unknown energy site {kind!r}")
 
-    def __init__(self, model, means: list[float], cost: float, seed: int, train: bool):
-        self.train = train
-        self.enabled = True
-        self.part = 0  # which micro-batch is running: each has its own streams
-        self.aux: list[torch.Tensor] = []
-        self.changed = 0.0
-        self.count = 0
-        self.handles = []
-        parts = BATCH // MICRO if train else 1
-        device = next(model.parameters()).device
-        for i, (layer, mean) in enumerate(zip(model.model.layers, means, strict=True)):
-            drive = cost * mean  # neutral on average
-            eds = [
-                EnergyDynamics(
-                    drive,
-                    cost,
-                    precision=0.04,
-                    density=0.5,
-                    p=1.0,  # pretrained and dense: energy only fires and shuts off
-                    exploration=min(0.001, drive / 4),
-                    decay=drive / 4,
-                    fire_reset_to_zero=True,
-                    rng=torch.Generator(device).manual_seed(seed + 1000 * part + i),
-                )
-                for part in range(parts)
-            ]
-            self.handles.append(layer.mlp.act_fn.register_forward_hook(self._hook(eds)))
 
-    def _hook(self, eds: list[EnergyDynamics]):
+def site_means(model, ids: torch.Tensor) -> dict[str, list[float]]:
+    modules = [m for kind in ALL_SITES for m in site_modules(model, kind)]
+    means = mean_abs_outputs(modules, lambda: model(input_ids=ids, use_cache=False))
+    n = len(model.model.layers)
+    return {kind: means[i * n : (i + 1) * n] for i, kind in enumerate(ALL_SITES)}
+
+
+def energy_sites(model, means: dict[str, list[float]], kinds: tuple[str, ...]) -> list[EnergySite]:
+    """Every site is scaled to its layer's MLP activations, so a cost is the same dose everywhere."""
+    sites = []
+    for kind in kinds:
+        for module, mean, ref in zip(site_modules(model, kind), means[kind], means["mlp"], strict=True):
+            sites.append(EnergySite(module, ref, scale=1.0 if kind == "mlp" else mean / ref))
+    return sites
+
+
+class SiteNoise:
+    """White noise of sigma x (site mean) at the same sites: the damage-matched control for energy."""
+
+    def __init__(self, sites: list[EnergySite], sigma: float, seed: int):
+        self.enabled, self.part, self.aux = True, 0, []
+        self.handles = [
+            s.module.register_forward_hook(self._hook(s, sigma, seed + i)) for i, s in enumerate(sites)
+        ]
+        self.gens: dict = {}
+
+    def _hook(self, site: EnergySite, sigma: float, seed: int):
         def hook(_module, _args, output):
             if not self.enabled:
-                return output
-            ed = eds[self.part]
-            if ed.energy is None:  # start at rest: sili's near-threshold start fires a whole layer at once
-                shape = output[:, 0].shape
-                ed.energy = torch.zeros(shape, device=output.device)
-                ed.steps_since_fired = torch.zeros(shape, dtype=torch.long, device=output.device)
-            outs = []
-            for t in range(output.shape[1]):
-                h = output[:, t]
-                out, aux, _ = ed(h)
-                if self.train:
-                    self.aux.append(aux)
-                self.changed = self.changed + ((out - h).detach().abs() > 1e-3).sum()
-                self.count += h.numel()
-                outs.append(out)
-            return torch.stack(outs, 1)
+                return None
+            h = output[0] if isinstance(output, tuple) else output
+            gen = self.gens.setdefault((seed, h.device), torch.Generator(h.device).manual_seed(seed))
+            noise = torch.randn(h.shape, generator=gen, device=h.device) * (sigma * site.mean * site.scale)
+            noisy = h + noise.to(h.dtype)
+            return (noisy, *output[1:]) if isinstance(output, tuple) else noisy
 
         return hook
 
     def changed_fraction(self) -> float:
-        frac = float(self.changed / max(self.count, 1))
-        self.changed, self.count = 0.0, 0
-        return frac
+        return 1.0
 
     def remove(self) -> None:
         for handle in self.handles:
             handle.remove()
-
-
-@torch.no_grad()
-def activation_means(model, ids: torch.Tensor) -> list[float]:
-    means: list[float] = []
-    record = lambda _m, _a, out: means.append(out.float().abs().mean().item())  # noqa: E731
-    handles = [layer.mlp.act_fn.register_forward_hook(record) for layer in model.model.layers]
-    model(input_ids=ids, use_cache=False)
-    for handle in handles:
-        handle.remove()
-    return means
 
 
 @torch.no_grad()
@@ -181,7 +190,7 @@ def train_epoch(model, opt, data: torch.Tensor, energy, aux_weight: float, order
                 energy.part = part
             lm = continuation_loss(model(input_ids=ids, use_cache=False).logits, ids, BLOCK)
             loss = lm
-            if energy:
+            if energy and energy.aux:
                 loss = lm + aux_weight * torch.stack(energy.aux).sum() / ids.numel()
                 energy.aux.clear()
             share = len(micro) / len(idx)
@@ -227,7 +236,8 @@ def main() -> None:
     ap.add_argument("--lr", type=float, default=1e-5)
     ap.add_argument("--aux-weight", type=float, default=1e-3)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--arms", default=",".join(a.name for a in ARMS))
+    ap.add_argument("--suite", choices=SUITES, default="pilot")
+    ap.add_argument("--arms", help="comma-separated subset of the suite")
     ap.add_argument("--max-temp", type=int, default=80)
     args = ap.parse_args()
 
@@ -258,7 +268,7 @@ def main() -> None:
 
     student, teacher = load("cuda:0", torch.float32), load("cuda:1", torch.float16)
     original = {k: v.detach().cpu().clone() for k, v in student.named_parameters()}
-    means = activation_means(teacher, test[:BATCH].to("cuda:1"))
+    means = site_means(teacher, test[:BATCH].to("cuda:1"))
 
     def set_weights(model, weights) -> None:
         with torch.no_grad():
@@ -266,8 +276,14 @@ def main() -> None:
                 param.copy_(weights[key].to(param.device, param.dtype))
 
     rows, kept = [], {}
-    wanted = set(args.arms.split(","))
-    for arm in [a for a in ARMS if a.name in wanted]:
+    arms = SUITES[args.suite]
+    if args.arms:
+        wanted = set(args.arms.split(","))
+        assert wanted <= {a.name for a in arms}, (
+            f"not in suite {args.suite}: {wanted - {a.name for a in arms}}"
+        )
+        arms = [a for a in arms if a.name in wanted]
+    for arm in arms:
         torch.manual_seed(args.seed)
         order = torch.Generator().manual_seed(args.seed)
         rng = torch.Generator("cuda:1").manual_seed(args.seed)
@@ -285,9 +301,23 @@ def main() -> None:
             set_weights(teacher, dict(student.named_parameters()))
             if gen == 1:
                 teach_energy, learn_energy = None, None
-                if arm.cost:
-                    teach_energy = NeuronEnergy(teacher, means, arm.cost, args.seed, train=False)
-                    learn_energy = NeuronEnergy(student, means, arm.cost, args.seed + 100, train=True)
+                if arm.noise:
+                    teach_energy = SiteNoise(energy_sites(teacher, means, arm.sites), arm.noise, args.seed)
+                    learn_energy = SiteNoise(
+                        energy_sites(student, means, arm.sites), arm.noise, args.seed + 100
+                    )
+                elif arm.cost:
+                    teach_energy = NeuronEnergy(
+                        energy_sites(teacher, means, arm.sites), arm.cost, args.seed, decay_div=arm.decay_div
+                    )
+                    learn_energy = NeuronEnergy(
+                        energy_sites(student, means, arm.sites),
+                        arm.cost,
+                        args.seed + 100,
+                        train=True,
+                        parts=BATCH // MICRO,
+                        decay_div=arm.decay_div,
+                    )
             data = (
                 real[gen]
                 if arm.real
@@ -295,12 +325,14 @@ def main() -> None:
             )
             lm = train_epoch(student, opt, data, learn_energy, args.aux_weight, order, args.max_temp)
             row = {"arm": arm.name, "generation": gen, "train_lm": lm}
-            if arm.cost:
+            if arm.cost or arm.noise:
                 row["teacher_changed"] = teach_energy.changed_fraction()
                 row["student_changed"] = learn_energy.changed_fraction()
                 learn_energy.enabled = False  # evaluation is always energy off
             row["test_perplexity"] = perplexity(student, test, BLOCK)
-            if arm.cost:
+            free = generate(student, test[: 2 * BATCH, :BLOCK], 0.0, None, args.max_temp)[:, BLOCK:]
+            row |= {f"free_{k}": v for k, v in sample_stats(free, rare).items()}
+            if arm.cost or arm.noise:
                 learn_energy.enabled = True
             row |= sample_stats(data[:, BLOCK:], rare)
             row["seconds"] = time.time() - t0
