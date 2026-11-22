@@ -89,26 +89,31 @@ def _apply_energy_dynamics(
     new_energy = torch.where(stale, new_energy, energy_flat)  # awake neurons are frozen
 
     # 4. hard-ceiling top-p gate: fired by energy first, then the others by |h|
-    n_stale = int(stale.sum())
+    all_stale = wake_gate_steps is None
+    n_stale = n if all_stale else int(stale.sum())
     k = max(1, round(p * n_stale)) if n_stale > 0 else 0
-    fire_idx = fire_mask.nonzero().squeeze(1)
-    non_fire_idx = (stale & ~fire_mask).nonzero().squeeze(1)
-    n_fired = len(fire_idx)
-
-    kept_nfire = non_fire_idx[:0]
-    if n_fired >= k:
-        kept_fire = fire_idx[new_energy[fire_idx].topk(k, sorted=False).indices]
+    if all_stale and k >= n:  # nothing competes: no sort, and no waiting on the GPU
+        kept_fire_mask = fire_mask
+        kept_nfire_mask = ~fire_mask
     else:
-        kept_fire = fire_idx
-        fill_k = min(k - n_fired, len(non_fire_idx))
-        if fill_k > 0:
-            scores = h_dz[non_fire_idx].abs()
-            kept_nfire = non_fire_idx[scores.topk(fill_k, sorted=False).indices]
+        fire_idx = fire_mask.nonzero().squeeze(1)
+        non_fire_idx = (stale & ~fire_mask).nonzero().squeeze(1)
+        n_fired = len(fire_idx)
 
-    kept_fire_mask = torch.zeros(n, dtype=torch.bool, device=device)
-    kept_fire_mask[kept_fire] = True
-    kept_nfire_mask = torch.zeros(n, dtype=torch.bool, device=device)
-    kept_nfire_mask[kept_nfire] = True
+        kept_nfire = non_fire_idx[:0]
+        if n_fired >= k:
+            kept_fire = fire_idx[new_energy[fire_idx].topk(k, sorted=False).indices]
+        else:
+            kept_fire = fire_idx
+            fill_k = min(k - n_fired, len(non_fire_idx))
+            if fill_k > 0:
+                scores = h_dz[non_fire_idx].abs()
+                kept_nfire = non_fire_idx[scores.topk(fill_k, sorted=False).indices]
+
+        kept_fire_mask = torch.zeros(n, dtype=torch.bool, device=device)
+        kept_fire_mask[kept_fire] = True
+        kept_nfire_mask = torch.zeros(n, dtype=torch.bool, device=device)
+        kept_nfire_mask[kept_nfire] = True
     shutoff_in_kept = kept_nfire_mask & shutoff_mask
     normal_kept = kept_nfire_mask & ~shutoff_mask & alive
 
@@ -129,17 +134,21 @@ def _apply_energy_dynamics(
     kl_val = precision * (rho * math.log(rho / density) + off)
 
     # indexing, not masking: an overflowed awake |h| would give inf * 0 = nan
-    stale_idx = stale.nonzero().squeeze(1)
     h_flat = h.reshape(-1).float()
-    c_stale = (energy_flat + drive + noise)[stale_idx]
-    new_energy_t_stale = c_stale - activation_cost * abs_slope1_at_zero(h_flat[stale_idx])
+    c_stale, h_stale = energy_flat + drive + noise, h_flat
+    if not all_stale:
+        stale_idx = stale.nonzero().squeeze(1)
+        c_stale, h_stale = c_stale[stale_idx], h_flat[stale_idx]
+    new_energy_t_stale = c_stale - activation_cost * abs_slope1_at_zero(h_stale)
     energy_loss = (reactivity / 2.0) * ((new_energy_t_stale - setpoint) ** 2).sum()
     aux_loss = kl_val + energy_loss
 
-    if fire_wake_gradient is not None and len(kept_fire) > 0:
-        assert wake_sign is not None, "wake_sign is required when fire_wake_gradient is set"
-        signs = wake_sign.to(device, torch.float32).reshape(-1)[kept_fire]
-        aux_loss = aux_loss + (h_flat[kept_fire] * (fire_wake_gradient * signs)).sum()
+    if fire_wake_gradient is not None:
+        kept_fire = kept_fire_mask.nonzero().squeeze(1)
+        if len(kept_fire) > 0:
+            assert wake_sign is not None, "wake_sign is required when fire_wake_gradient is set"
+            signs = wake_sign.to(device, torch.float32).reshape(-1)[kept_fire]
+            aux_loss = aux_loss + (h_flat[kept_fire] * (fire_wake_gradient * signs)).sum()
 
     kept_indices = (normal_kept | kept_fire_mask | shutoff_in_kept).nonzero().squeeze(1)
     new_ssf = torch.where(kept_fire_mask, 0, ssf_flat + 1)

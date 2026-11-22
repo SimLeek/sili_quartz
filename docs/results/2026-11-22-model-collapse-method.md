@@ -30,12 +30,18 @@ Written before the pilot's results. Script: `examples/model_collapse.py`.
   same 128 blocks, and its *real* control went 20.7 → 27.3 → 37.0 → 76.4 at
   generations 0, 1, 2, 6 from overfitting alone, so it was stopped in that
   first arm. The papers avoid this with ~36k documents.)
-- Energy on both models: MLP activations of layers 2, 6, 10, 14, 18, 22; p = 1;
+- Energy on both models: the MLP activations of all 24 layers (amended
+  before any energy arm ran, user: neuron-only, so no reason to pick six);
+  the student backprops each batch as two halves to fit the P40; p = 1;
   drive = cost × mean |h|; decay = drive/4; reset to zero on fire; starts at
   rest; accumulates across batches and generations. Student loss = LM + 1e-3 ×
   aux per token. Evaluation always has energy off.
 - Arms: real control (keep training on fresh real text), greedy, T .9, T 1.0, and
-  energy cost .01 / .1 on greedy and on T .9. One seed: a pilot, not a verdict.
+  energy cost .001 / .01 / .1 on greedy and on T .9. One seed: a pilot, not a
+  verdict.
+- Real text + energy .1 is the control for the cheap explanation: if energy
+  only blocks learning, it also "prevents forgetting", and this arm will stop
+  improving where the real control improves.
 
 **Forgetting prevented**, fixed in advance: with
 `rise = ln(test perplexity at generation g) − ln(at generation 0)`,
@@ -48,6 +54,15 @@ next to distinct-3-gram, looping and rare-token mass, because diversity alone
 can rise while quality falls (Drayson et al.).
 
 ## Feasibility measured first
+
+- Energy on all 24 layers, each batch backpropped as two halves: P40 peak
+  17.0 GiB (16.1 without energy), so no pipelining yet. A single 1k-token
+  stream would fill the P40, and 4k tokens (~45 GiB, extrapolated) would not
+  fit on the P40 + 2060 together: long dialogue messages need truncated
+  backprop or e-BPTT as well as pipelining.
+- A two-generation, 16-sample smoke run (not a result): greedy perplexity
+  27.6 → 48.2, with energy .1 → 31.1, while that arm's samples looped *more*
+  (94 % vs 63 %). Perplexity alone would have called this a success.
 
 - 752M text parameters load with no missing keys. fp16 (2060) and fp32 (P40)
   perplexity: 35.435 and 35.433. Cached and full passes agree on argmax.

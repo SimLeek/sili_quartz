@@ -185,8 +185,12 @@ headers or read from the call sites.
   max_abs_grad off (1e30: the binding's 8 is never passed for fp4).
 - **Effective weight:** W = Q ⊙ S + A, with the rank-N scale S and the additive
   A in fp32. Activations and state are fp32.
-- **Nibble order differs:** block4 = importance high, weight low; scattered
-  `FP4BiPacked` = weight high, importance low.
+- **Nibble order differs, for no recorded reason: use one order in the port.**
+  Scattered `FP4BiPacked` = weight high (3cb16b7, 2026-07-01). Block4 = weight
+  low (8fb1583, a Claude commit, 2026-07-28, no rationale given). Today's
+  conversions all decode and re-encode correctly (read, not tested). Two
+  comments state block4's order backwards or ambiguously: `block4.hpp` (the
+  Block4Tile8 comment) and `delta_csr_types.rst` ("weight|imp<<4").
 - **Not for learning updates:** `fp4_quantize` / `fp4_quantize_live` (nearest).
   The column-rescale pass in `delta_csr_types.hpp` still writes with
   `fp4_quantize_live`, so small rescales are lost or biased: check it before

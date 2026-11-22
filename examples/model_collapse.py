@@ -13,7 +13,8 @@ trains, then the teacher takes the student's weights. Every generation uses
 fresh blocks of real text as prompts (and as the real control's data): a few
 hundred reused blocks overfit, which looks like forgetting. The student is
 never reset, so this measures forgetting as well as collapse. With energy, both
-models run it and their energy accumulates, never reset within an arm.
+models run it on every layer's MLP neurons, and their energy accumulates,
+never reset within an arm.
 
     python examples/model_collapse.py --model DIR --data DIR --out DIR
 """
@@ -36,7 +37,7 @@ from sili_quartz.energy import EnergyDynamics
 
 BLOCK = 64  # prompt tokens, and continuation tokens
 BATCH = 8
-ENERGY_LAYERS = (2, 6, 10, 14, 18, 22)  # MLP activations
+MICRO = 4  # the P40 backprops half a batch at a time: same gradient, half the graph
 
 
 @dataclass(frozen=True)
@@ -49,10 +50,13 @@ class Arm:
 
 ARMS = (
     Arm("real_control", 0.0, real=True),
+    Arm("real_energy_0.1", 0.0, cost=0.1, real=True),  # does energy just block learning?
     Arm("greedy", 0.0),
+    Arm("greedy_energy_0.001", 0.0, cost=0.001),
     Arm("greedy_energy_0.01", 0.0, cost=0.01),
     Arm("greedy_energy_0.1", 0.0, cost=0.1),
     Arm("t0.9", 0.9),
+    Arm("t0.9_energy_0.001", 0.9, cost=0.001),
     Arm("t0.9_energy_0.01", 0.9, cost=0.01),
     Arm("t0.9_energy_0.1", 0.9, cost=0.1),
     Arm("t1.0", 1.0),
@@ -71,36 +75,41 @@ def continuation_loss(logits: torch.Tensor, ids: torch.Tensor, first: int) -> to
 
 
 class NeuronEnergy:
-    """EnergyDynamics on MLP activations, stepped over tokens, one state per stream."""
+    """EnergyDynamics on every layer's MLP activations, stepped over tokens, one state per stream."""
 
     def __init__(self, model, means: list[float], cost: float, seed: int, train: bool):
         self.train = train
         self.enabled = True
+        self.part = 0  # which micro-batch is running: each has its own streams
         self.aux: list[torch.Tensor] = []
         self.changed = 0.0
         self.count = 0
         self.handles = []
-        for i, (layer, mean) in enumerate(zip(ENERGY_LAYERS, means, strict=True)):
+        parts = BATCH // MICRO if train else 1
+        device = next(model.parameters()).device
+        for i, (layer, mean) in enumerate(zip(model.model.layers, means, strict=True)):
             drive = cost * mean  # neutral on average
-            device = next(model.parameters()).device
-            ed = EnergyDynamics(
-                drive,
-                cost,
-                precision=0.04,
-                density=0.5,
-                p=1.0,  # pretrained and dense: energy only fires and shuts off
-                exploration=min(0.001, drive / 4),
-                decay=drive / 4,
-                fire_reset_to_zero=True,
-                rng=torch.Generator(device).manual_seed(seed + i),
-            )
-            module = model.model.layers[layer].mlp.act_fn
-            self.handles.append(module.register_forward_hook(self._hook(ed)))
+            eds = [
+                EnergyDynamics(
+                    drive,
+                    cost,
+                    precision=0.04,
+                    density=0.5,
+                    p=1.0,  # pretrained and dense: energy only fires and shuts off
+                    exploration=min(0.001, drive / 4),
+                    decay=drive / 4,
+                    fire_reset_to_zero=True,
+                    rng=torch.Generator(device).manual_seed(seed + 1000 * part + i),
+                )
+                for part in range(parts)
+            ]
+            self.handles.append(layer.mlp.act_fn.register_forward_hook(self._hook(eds)))
 
-    def _hook(self, ed: EnergyDynamics):
+    def _hook(self, eds: list[EnergyDynamics]):
         def hook(_module, _args, output):
             if not self.enabled:
                 return output
+            ed = eds[self.part]
             if ed.energy is None:  # start at rest: sili's near-threshold start fires a whole layer at once
                 shape = output[:, 0].shape
                 ed.energy = torch.zeros(shape, device=output.device)
@@ -132,7 +141,7 @@ class NeuronEnergy:
 def activation_means(model, ids: torch.Tensor) -> list[float]:
     means: list[float] = []
     record = lambda _m, _a, out: means.append(out.float().abs().mean().item())  # noqa: E731
-    handles = [model.model.layers[i].mlp.act_fn.register_forward_hook(record) for i in ENERGY_LAYERS]
+    handles = [layer.mlp.act_fn.register_forward_hook(record) for layer in model.model.layers]
     model(input_ids=ids, use_cache=False)
     for handle in handles:
         handle.remove()
@@ -165,16 +174,21 @@ def train_epoch(model, opt, data: torch.Tensor, energy, aux_weight: float, order
     total, batches = 0.0, 0
     for idx in torch.randperm(len(data), generator=order).split(BATCH):
         check_temperature(max_temp)
-        ids = data[idx].to(device)
-        lm = continuation_loss(model(input_ids=ids, use_cache=False).logits, ids, BLOCK)
-        loss = lm
-        if energy:
-            loss = lm + aux_weight * torch.stack(energy.aux).sum() / ids.numel()
-            energy.aux.clear()
         opt.zero_grad(set_to_none=True)
-        loss.backward()
+        for part, micro in enumerate(idx.split(MICRO)):
+            ids = data[micro].to(device)
+            if energy:
+                energy.part = part
+            lm = continuation_loss(model(input_ids=ids, use_cache=False).logits, ids, BLOCK)
+            loss = lm
+            if energy:
+                loss = lm + aux_weight * torch.stack(energy.aux).sum() / ids.numel()
+                energy.aux.clear()
+            share = len(micro) / len(idx)
+            (share * loss).backward()
+            total += share * lm.item()
         opt.step()
-        total, batches = total + lm.item(), batches + 1
+        batches += 1
     opt.zero_grad(set_to_none=True)
     return total / batches
 
@@ -266,6 +280,7 @@ def main() -> None:
 
         for gen in range(1, args.generations + 1):
             t0 = time.time()
+            torch.cuda.reset_peak_memory_stats("cuda:0")
             check_temperature(args.max_temp)
             set_weights(teacher, dict(student.named_parameters()))
             if gen == 1:
@@ -289,6 +304,7 @@ def main() -> None:
                 learn_energy.enabled = True
             row |= sample_stats(data[:, BLOCK:], rare)
             row["seconds"] = time.time() - t0
+            row["p40_peak_gib"] = torch.cuda.max_memory_allocated("cuda:0") / 2**30
             kept[arm.name, gen] = data
             rows.append(row)
             print(json.dumps(row), flush=True)
