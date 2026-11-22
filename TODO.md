@@ -64,6 +64,12 @@ ledger, the cost quantified and never hidden.
    Deliverable: the comparative model size in fp4 for equal capacity, and any
    other conversion facts that fall out (bits/parameter, rank of the additive
    correction).
+   **Answered, narrowly (sili__new #58, corrected in #59):** stochastically
+   rounded stored fp4 moves to the right average, with a noise floor √(d·e)
+   that lr does not lower. The Hadamard/additive LoRAs and width are what
+   lower it. End-to-end MQAR on that kernel is not proved. There may be no
+   single parameter-count equivalence (precise work vs decision work): measure
+   it per task.
 2. **If the proof can't be done:** port a minimal fp4 hadamard / additive
    kernel to CUDA and train a transformer with it on the P40, then measure.
 3. **If something is off in training:** look for NVIDIA's solution (their fp4
@@ -147,6 +153,40 @@ omega window on sili CUDA) and the peridot-style sili Tensor port. So that we ca
    the sandbox (Bee), which has the free space.
 2. Get it running by transferring kernels one by one.
 3. Train it with intrinsic RL: energy, stochastic annealing.
+
+### The fp4 kernel version to port (checked on sili__new acc7916)
+Evidence: `bend_proofs/fp4_trainability` (#58, corrected in #59). Proved =
+one-update unbiasedness and its variance; the rest was measured on the real
+headers or read from the call sites.
+
+- **SIMD trap, read this before vectorizing for CUDA.** Do NOT port
+  `block4_vec_quantize_stochastic_fp4_live` (`block4.hpp`). Despite the name it
+  keeps the value's own sign, so under |v| < 0.5 it is deterministic, biased by
+  up to 0.5, and never crosses zero (0/1000 runs; the scalar: 1000/1000). Only
+  a unit test calls it. Vectorize the two *scalar* functions below, and test
+  E[Q(v)] = v and zero crossing on the GPU.
+- **Weight:** `fp4_quantize_stochastic_live`: unbiased on [-6, 6], saturates
+  outside, rounds across ±0.5 near zero.
+- **Importance is a different quantizer:**
+  `fp4_quantize_stochastic_live_nonneg`. Never reuse the weight's (or its SIMD
+  form) here: the cross-sign rounding makes importance negative and sqrt(ci)
+  NaN. Below 0.5 it deliberately returns 0.5 (a floor, so biased there).
+- **Empty slot:** block4 uses the plain `fp4_quantize_stochastic` pair when
+  weight and importance were both code 0 (`was_live` false), as in
+  `Block4Codec<FP4BiPacked>::encode<true>`.
+- **Update:** `disldo_backward<..., RMSpropScalePolicy, DeferredScaleWrite=false,
+  StochasticRounding=true, BoundedRMSpropSynapsePolicy>`: one batch-aggregated
+  update, then quantize. Defaults of the fp4 binding: beta2 .999, eps 1e-8,
+  max_abs_delta 2, max_ci 100, zero_escape_eps .1, scale_invariant off,
+  max_abs_grad off (1e30: the binding's 8 is never passed for fp4).
+- **Effective weight:** W = Q ⊙ S + A, with the rank-N scale S and the additive
+  A in fp32. Activations and state are fp32.
+- **Nibble order differs:** block4 = importance high, weight low; scattered
+  `FP4BiPacked` = weight high, importance low.
+- **Not for learning updates:** `fp4_quantize` / `fp4_quantize_live` (nearest).
+  The column-rescale pass in `delta_csr_types.hpp` still writes with
+  `fp4_quantize_live`, so small rescales are lost or biased: check it before
+  porting that pass.
 
 ## 6. Energy for RL task solving
 Get energy working for RL task solving too. Reading: "Energy-Based Reasoners:
