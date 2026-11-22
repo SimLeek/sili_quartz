@@ -116,7 +116,8 @@ The generational pilot (`examples/model_collapse.py`) comes before the dialogue.
 4. **Collapse metrics, per round:** rare-token mass (bottom tail of the
    original model's unigram distribution), distinct-n, longest repeated span /
    repetition rate, perplexity on fixed real held-out text, a structure check
-   (original model's perplexity on the samples).
+   (original model's perplexity on the samples: LOW is not good, loops score
+   10x better than real text; see docs/results/2026-11-22-energy-vs-loops.md).
 5. **Arms:** energy off at T = 1 (expected: collapse by round n); temperature
    sweep (expected: tails kept, structure lost); energy dose sweep from tiny
    (1e-6, expected useless) up, to find the line. Pass = no collapse through

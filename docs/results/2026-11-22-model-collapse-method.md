@@ -53,6 +53,12 @@ control's rise is whatever is not due to synthetic data. Report it
 next to distinct-3-gram, looping and rare-token mass, because diversity alone
 can rise while quality falls (Drayson et al.).
 
+**Caveat found after launch** ([energy vs loops](2026-11-22-energy-vs-loops.md)):
+perplexity cannot see repetition, and the original model's perplexity on the
+samples *improves* with it, so "forgetting prevented" is not "collapse
+prevented". The pilot's decay = drive/4 also lets energy settle instead of
+building up against a loop. The running pilot is left as configured.
+
 ## Feasibility measured first
 
 - Energy on all 24 layers, each batch backpropped as two halves: P40 peak
