@@ -87,7 +87,7 @@ even a small dose of neuron energy RL in the model that *generates* the data
 (per-neuron temperature, not token temperature) stops the collapse.
 Not stochastic annealing: that rescues the optimizer state in self-training.
 
-1. **Torch energy.** Port sili's `EnergyDynamics` (sili__new `sili/energy.py`;
+1. **Torch energy: done (PR #6, `sili_quartz/energy.py`, parity-tested).** Port sili's `EnergyDynamics` (sili__new `sili/energy.py`;
    the older torch version is behind it). Mostly a library rename sili → torch.
    The one real difference: sili's `abs` backward has slope 1 at exactly 0
    (`sili/cpu.py` `abs_backward`, so neurons can wake from zero), torch's has 0.
@@ -102,6 +102,10 @@ Not stochastic annealing: that rescues the optimizer state in self-training.
    original as is (slow to re-download). P40: fp32 (no fast bf16/fp16); for
    fp16, keep fp16 in global memory and convert to fp32 in local memory per op.
    Later: A_lora ⊙ hadamard(B_low_bit) + C_lora for the recurrent parts.
+Method and literature:
+[docs/results/2026-11-22-model-collapse-method.md](docs/results/2026-11-22-model-collapse-method.md).
+The generational pilot (`examples/model_collapse.py`) comes before the dialogue.
+
 3. **Two models talking to each other.**
    - 2060: runs a copy for inference with neuron energy accumulating,
      occasionally forcing firing / acting as per-neuron temperature.
