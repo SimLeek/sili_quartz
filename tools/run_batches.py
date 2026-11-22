@@ -84,7 +84,8 @@ def sync_remote(host: Host) -> None:
         ],
         check=True,
     )
-    subprocess.run(ssh(host, f"{host.py} -m pip install -q --no-deps --no-build-isolation -e {host.repo}"), check=True)
+    pip = f"{host.py} -m pip install -q --no-deps --no-build-isolation -e {host.repo}"
+    subprocess.run(ssh(host, pip), check=True)
 
 
 def launch(b: Batch, log_dir: Path, max_temp: int) -> tuple[Batch, subprocess.Popen]:

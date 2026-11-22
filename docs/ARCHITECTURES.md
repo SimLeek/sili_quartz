@@ -75,7 +75,7 @@ Three layers, as you proposed, and they map onto the families:
    four options, each independently testable against the ledger:
    `loss={l2,lp,huber}`, `retention={l2,lq,kl}`, `optimizer={gd,momentum,muon}`,
    `window=c` (Omega; c=1 is Titans), `features={identity,poly_p}` (poly2 tried
-   and dropped, see PROPERTIES row 31).
+   and dropped, see JOURNAL.md row 31).
 
 Two of those were tried first, for the game/programming-agent goal:
 
