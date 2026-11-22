@@ -29,7 +29,7 @@ record under [Done](#done) at the bottom; results live in `docs/results/`.
    escapes the start within N steps (expected to fail under Adam — mark xfail
    with the reason, don't paper over it).
 5. **40k seeds for the omega arms** — Done → [details](#done-1a5)
-6. **After this PR merges: port all three to sili CUDA kernels** — titans,
+6. **Port all three to sili CUDA kernels (now part of 5)** — titans,
    combined, and the omega window (user, 2026-11-17: the data does not rule any
    of them out). Same tests per kernel; Adam is the known non-exact exception.
    The start-up fixture (1a.4) and the 2b tradeoff tests then run on sili.
@@ -41,45 +41,37 @@ No further B/C-family literature to fold in (user, 2026-11-16).
 
 ## 2. ATLAS switches — omega kept, poly2 dropped → [details](#done-2)
 
-## 2b. Two planned changes are TRADEOFFS, not wins — test them as such
-Each gets a two-axis measurement (what it should improve, what it should
-cost) rather than a pass/fail "better". Record both numbers in the ledger.
+## 2b. torch + Adam → sili + importance: will our fp4 setup train?
+Both planned changes are TRADEOFFS, not wins: each gets a two-axis
+measurement (what it should improve, what it should cost), both numbers in the
+ledger, the cost quantified and never hidden.
 
-- **e-BPTT via blame buffer(s).** A buffer receives ~2% of forward activity
-  continually and is backpropagated to once (or several such buffers at
-  different rates). Expected: better long-term recall (credit reaches writes
-  beyond the BPTT window) at the cost of SLOWER learning for anything inside
-  the BPTT window. Test: long-gap accuracy vs steps AND in-window accuracy vs
-  steps, side by side with full in-episode BPTT; the cost is the right-shift of
-  the in-window curve.
-  - **Torch first pass (branch research/e-bptt-fake-backprop, 2026-11-17):**
-    `models/ebptt.py`. Overriding a saved input during backward works
-    (`saved_tensors_hooks`; tested on starmap (no temporal association), 2D slices of smoothed 3D gaussian noise, temporal-only smoothed noise, white noise).
-    On row 15 with the state detached every chunk: credit from a plain sum of
-    remembered inputs 0.268, buffer 0.212. With the V-side Jacobian carried
-    (I − c k kᵀ): trace 0.969, buffer-16 0.891 (pass). W_V-only credit 0.061.
-    Sparse credit backward over a noise-chosen 1/4 of memory dims matches the
-    dense credit (9/11 vs 6/8 seeds ≥ 0.95). |G|-chosen stalls on 2 of 3 seeds
-    and its choice is biased (measured: top 8 dims take 29 % of picks), but
-    that the bias CAUSES the stall is not shown. The Bend proof
-    (sili__new bend_proofs/noise_selected_credit) only shows the noise
-    choice is unbiased; error feedback is the known fix for biased top-k. Per-chunk
-    backward (`stream_backward`) makes memory flat in T: 22 MiB at T = 28…1036
-    vs 45…1582 MiB for full BPTT. Row-15 test at constant memory: 0.980.
-    Cost axis: steps to 0.95 vs full BPTT ×5–10 at gap 16; at gap 64 BPTT 3/3
-    by 250, e-BPTT 1/3 by 750 and 2/3 stuck ~0.4 (cost grows with gap).
-    Open: clean in-window test (episode inside one chunk); more steps / seeds
-    at gap 64; larger d for the wall-time saving.
 - **Adam → sili importance (single-state optimizer).** Expected: worse
   accuracy/steps until the mean/variance control and eigenvalue stochastic
-  annealing land (those may recover it). The benefit that is certain is RAM:
-  **1/2** of the Adam footprint for the same model — weight + one importance
-  value, and sili keeps no backprop state (a conventional engine with a
-  one-value optimizer would be 2/3). Test: same curves as above plus peak
-  memory per parameter; a regression in steps-to-threshold is EXPECTED and must
-  be quantified, not hidden. Adam remains the diagnostic reference.
+  annealing land. Certain benefit: RAM, **1/2** of the Adam footprint (weight +
+  one importance value; sili keeps no backprop state; a conventional engine with
+  a one-value optimizer would be 2/3). Adam remains the diagnostic reference.
+- **e-BPTT** — torch first pass done (PR #4) → [details](#done-2b-ebptt).
+  Open items are under 7.
 
-## 2c. NEXT: does energy RL prevent model collapse? (user, 2026-11-18)
+1. **Bend proof first.** Prove that weights + optimizer state in fp4 with
+   hadamard / additive LoRAs, plus annealing, can train and learn the recurrent
+   MQAR, possibly requiring stochastic learning (stochastic rounding /
+   selection). Not necessarily "as well" at equal size: information theory /
+   compression may stop low bits from matching fp32 per parameter. If so, state
+   the bound and the size that overcomes it: a larger fp4 model can trade
+   precision-type complexity for more if-then (decision-type) complexity.
+   Deliverable: the comparative model size in fp4 for equal capacity, and any
+   other conversion facts that fall out (bits/parameter, rank of the additive
+   correction).
+2. **If the proof can't be done:** port a minimal fp4 hadamard / additive
+   kernel to CUDA and train a transformer with it on the P40, then measure.
+3. **If something is off in training:** look for NVIDIA's solution (their fp4
+   training recipes) and biology's. Constraint: no more than **4 bits** of
+   optimizer state per parameter. (The user had Gemini estimate how many bits
+   per parameter each neurochemical is equivalent to.)
+
+## 2c. Sili energy port and model collapse
 Model collapse: a language model trained on another LM's samples, chained
 generation after generation, loses rare words first (the tails vanish) and
 eventually repeats forever (Shumailov et al., Nature 2024, "AI models collapse
@@ -87,63 +79,93 @@ when trained on recursively generated data"). Raising sampling temperature does
 not fix it: it keeps the tails but loses sentence structure. The claim to test:
 even a small dose of neuron energy RL in the model that *generates* the data
 (per-neuron temperature, not token temperature) stops the collapse.
-
 Not stochastic annealing: that rescues the optimizer state in self-training.
-Here the next model trains on outputs of a model whose energy RL is active.
 
-1. **Torch energy.** There is an older torch version; sili's `EnergyDynamics`
-   (sili__new `sili/energy.py`) is more advanced, so port the sili one. It
-   should be mostly a library rename sili → torch. The one real difference:
-   sili's `abs` backward uses slope 1 at exactly 0 (`sili/cpu.py`
-   `abs_backward`, so neurons can wake from zero), where torch uses 0. Use
-   `torch.where(x == 0, x, x.abs())`: value 0, gradient 1 at zero. Unit tests:
-   forward/backward match sili on fixed inputs, including h = 0.
-2. **The chain.** Generation 0 = "some model", kept outside the codebase:
-   a recurrent transformer, Qwen3.5-0.8B or Qwen3.5-2B (hybrid: 3 linear-
-   attention layers per full-attention layer). Recurrent states are more
-   sensitive to small floating-point errors, so these are the harder, more
-   useful case (also harder to quantize). The user's download is
-   GameScaling-0.8B (`~/claude_code/GameScaling-0.8B`, a Qwen3.5-0.8B
-   continued-pretraining finetune on games: keyboard/mouse control + vision,
-   useful later with robonet). Work on a COPY and keep the original as is
-   (slow to re-download). 0.8B trains on the P40 at full fp32 (weights are
-   bf16 on disk; the P40 has no fast bf16/fp16 math). For fp16 training on
-   the P40: keep fp16 in global memory, convert to fp32 in local memory per
-   op. To test later: A_lora ⊙ hadamard(B_low_bit) + C_lora for low-bit
-   adaptation of the recurrent parts. Generation i+1 is trained (LM loss, partly mixed
-   with the energy RL aux loss) on text sampled from generation i. Fixed real
-   held-out text for evaluation.
-3. **Collapse metrics, per generation:** frequency of rare tokens (mass in the
-   bottom tail of the gen-0 unigram distribution), distinct-n / unique n-gram
-   ratio, longest repeated span / repetition rate, perplexity on the real
-   held-out text, a structure check (e.g. gen-0 model's perplexity on the
-   samples).
-4. **Arms:** plain sampling at T = 1 (expected: collapse by generation n);
-   temperature sweep (expected: tails kept, structure lost); energy RL dose
-   sweep from tiny (1e-6, expected useless) up, to find where the line is.
-   Pass = no collapse through n + k generations (k a fixed budget) at some
-   dose, with structure kept. Seeds = same program run N times.
-5. Results to `docs/results/`, ledger row for the property.
+1. **Torch energy.** Port sili's `EnergyDynamics` (sili__new `sili/energy.py`;
+   the older torch version is behind it). Mostly a library rename sili → torch.
+   The one real difference: sili's `abs` backward has slope 1 at exactly 0
+   (`sili/cpu.py` `abs_backward`, so neurons can wake from zero), torch's has 0.
+   Use `torch.where(x == 0, x, x.abs())`. Unit tests: forward/backward match
+   sili on fixed inputs, including h = 0.
+2. **Model.** "Some model", kept outside the codebase: Qwen3.5-0.8B or 2B
+   (hybrid recurrent: 3 linear-attention layers per full-attention layer;
+   recurrent states are sensitive to small float errors, so harder to quantize
+   and the more useful case). The user's download is GameScaling-0.8B
+   (`~/claude_code/GameScaling-0.8B`, a Qwen3.5-0.8B finetune on games:
+   keyboard/mouse + vision, for robonet later). Work on a COPY; keep the
+   original as is (slow to re-download). P40: fp32 (no fast bf16/fp16); for
+   fp16, keep fp16 in global memory and convert to fp32 in local memory per op.
+   Later: A_lora ⊙ hadamard(B_low_bit) + C_lora for the recurrent parts.
+3. **Two models talking to each other.**
+   - 2060: runs a copy for inference with neuron energy accumulating,
+     occasionally forcing firing / acting as per-neuron temperature.
+   - P40: trains with energy (LM loss partly mixed with the energy RL aux
+     loss) on the 2060's text, and sends its own text responses back.
+   - Turns: a simple end token ends a message and passes the turn; max message
+     length a fixed limit in 1k–4k tokens.
+4. **Collapse metrics, per round:** rare-token mass (bottom tail of the
+   original model's unigram distribution), distinct-n, longest repeated span /
+   repetition rate, perplexity on fixed real held-out text, a structure check
+   (original model's perplexity on the samples).
+5. **Arms:** energy off at T = 1 (expected: collapse by round n); temperature
+   sweep (expected: tails kept, structure lost); energy dose sweep from tiny
+   (1e-6, expected useless) up, to find the line. Pass = no collapse through
+   n + k rounds (k a fixed budget) at some dose, structure kept. Seeds = same
+   program run N times. Results to `docs/results/`, ledger row.
 
-## 3. Training-regime constraints (user, 2026-11-15)
+## 3. Stochastic annealing + health pass: "sleep"
 - **Sleep window (≤ 8 h/day, once a day) = annealing + health passes that
   improve the optimizer state.** Sparse backprop runs during BOTH wake and
   sleep. fp4-fix is a separate, later thing (only once we are at fp4). So the
-  memory tier does not have to hold a whole day alone — weights learn all day;
-  what sleep adds is the optimizer-state repair. Design the schedule around that.
+  memory tier does not have to hold a whole day alone: weights learn all day;
+  sleep adds the optimizer-state repair. Design the schedule around that.
 - Sparse amortized learning with health/annealing may run far below max
   learning speed: closer to inference in some phases, to training in others.
   Memory-family results must be re-checked under THAT rate, not Adam's.
 - Stochastic selection has won every training-related comparison so far; it
-  will change these properties too — include it as an arm, not a footnote.
+  will change these properties too: include it as an arm, not a footnote.
 
-## 4. Still open from before
-- Then: peridot-style (sili Tensor) port, then CUDA kernels one at a time,
-  each passing the same tests. Adam is the known non-exact exception.
-- Later: Omega distractor test (row 20), chunk sweep, MIRAS losses, MLP memory,
-  Muon, XL cache (A) as a live control.
+## 4. HDD hippocampus
+1. Port sili cpu so that forward can add contribution to one subset of input
+   rows while backward adds gradient + optimizer updates to another subset.
+2. fp4 hadamard working in VRAM on an MQAR example.
+3. A million × million recurrent transformer block, backprop through a random
+   subset of ~1000 rows where the subset is time-related (nearby time entries are
+   chosen together, as in e-BPTT's smoothed noise). Backed by the sili database
+   in HDD memory. ~1000 rows to keep reads/writes to around page size. both row
+   reads/writes and seeking to the next selected row should be sequential.
+   The networks should be very sparse, with 1000-10000 synapses,
+   to limit to 20-40MB IO per step.
 
-## 5. Compute
+## 5. Port kernels
+Port the required kernels and code one by one, each passing the same tests
+(Adam is the known non-exact exception). Includes 1a.6 (titans, combined,
+omega window on sili CUDA) and the peridot-style sili Tensor port. So that we can:
+1. Convert Qwen3.8-27B to fp4 with fp4 + hadamard + additive as close to the
+   original weights as possible (and the optimizer state if we can get it,
+   otherwise a fake, relatively high optimizer state). Download models onto
+   the sandbox (Bee), which has the free space.
+2. Get it running by transferring kernels one by one.
+3. Train it with intrinsic RL: energy, stochastic annealing.
+
+## 6. Energy for RL task solving
+Get energy working for RL task solving too. Reading: "Energy-Based Reasoners:
+Your Recurrent Reasoner Should Be an Energy-Based Model".
+
+## 7. Random top-k with error feedback
+Implement and test random top-k with error feedback on small MQAR recurrent
+transformer models. See sili__new `bend_proofs/noise_selected_credit/README.md`
+(error feedback section). Open question: does a cheap, correct error feedback
+exist for this setting, or not?
+- e-BPTT items still open: clean in-window test (episode inside one chunk);
+  more steps / seeds at gap 64; larger d for the wall-time saving; K-side
+  Jacobian.
+
+## Backlog: integration tests + advancements from other models
+- Omega distractor test (row 20), chunk sweep, MIRAS losses, MLP memory, Muon,
+  XL cache (A) as a live control.
+
+## Reference: compute
 - Router LAN (DHCP, 192.168.1.0/24). Hosts are found by MAC, not IP:
   `tools/lan_hosts.py [name]` reads `~/.config/sili_quartz/lan_hosts` (kept out of
   this public repo), checks the ARP table, sweeps the wired /24 if needed.
@@ -245,3 +267,24 @@ Titans + omega and combined + omega, seeds 0–6, 40k steps, same spec as the
   (10k run) and trained at 4.5k on the 2060. The 1a.4 fixture needs pinned
   hardware or a failure count over many seeds.
 - 1080 peak 77 °C (3 under the abort), 1660 SUPER 70, 2060 63, P40 51.
+
+<a id="done-2b-ebptt"></a>
+## 2b. e-BPTT torch first pass (PR #4, 2026-11-17)
+[docs/results/2026-11-17-ebptt-credit-sweep.md](docs/results/2026-11-17-ebptt-credit-sweep.md)
+`models/ebptt.py`. Overriding a saved input during backward works
+(`saved_tensors_hooks`; tested on starmap (no temporal association), 2D slices of smoothed 3D gaussian noise, temporal-only smoothed noise, white noise).
+On row 15 with the state detached every chunk: credit from a plain sum of
+remembered inputs 0.268, buffer 0.212. With the V-side Jacobian carried
+(I − c k kᵀ): trace 0.969, buffer-16 0.891 (pass). W_V-only credit 0.061.
+Sparse credit backward over a noise-chosen 1/4 of memory dims matches the
+dense credit (9/11 vs 6/8 seeds ≥ 0.95). |G|-chosen stalls on 2 of 3 seeds
+and its choice is biased (measured: top 8 dims take 29 % of picks), but
+that the bias CAUSES the stall is not shown. The Bend proof
+(sili__new bend_proofs/noise_selected_credit) only shows the noise
+choice is unbiased; error feedback is the known fix for biased top-k. Per-chunk
+backward (`stream_backward`) makes memory flat in T: 22 MiB at T = 28…1036
+vs 45…1582 MiB for full BPTT. Row-15 test at constant memory: 0.980.
+Cost axis: steps to 0.95 vs full BPTT ×5–10 at gap 16; at gap 64 BPTT 3/3
+by 250, e-BPTT 1/3 by 750 and 2/3 stuck ~0.4 (cost grows with gap).
+Open: clean in-window test (episode inside one chunk); more steps / seeds
+at gap 64; larger d for the wall-time saving.
