@@ -208,12 +208,33 @@ estimates, measured in A-0 before any choice:
 - *Activations:*
   - One 800 × 600 viewport frame is about 470 vision tokens (patch 16, merge
     2), and each call also carries a history of frames.
-  - Linear-attention backprop keeps about 1 MiB per token per layer, measured
-    in 2c. Backprop through 2k tokens across 24 layers would be about 48 GiB.
-  - So, as in 2c, split the batch and checkpoint gradients first.
+  - *Where the 1 MiB per token per layer comes from* (measured in 2c): it is
+    exactly one copy of the linear-attention state, 16 heads × 128 × 128 ×
+    4 bytes.
+    - Without flash-linear-attention, transformers falls back to a reference
+      PyTorch recurrence, and autograd saves that state at *every* token for
+      the backward pass.
+    - The full-attention layers (6 of 24) only save about 4 KB per token
+      (hidden 1024).
+  - *So 48 GiB is the worst case:* plain full BPTT through all 2k tokens of
+    context, with every per-token state stored. It is not a cost of 2k tokens
+    as such. The forward pass with no grad keeps one state per layer.
+  - *With e-BPTT* (quartz PR #4, per-chunk backward with a carried
+    Jacobian, flat memory in T):
+    - only the current chunk is stored, e.g. the newest frame plus its action
+      tokens, about 500 tokens, about 12 GiB across 24 layers;
+    - older context is a detached state with carried credit;
+    - a smaller chunk scales that down linearly.
+    - It is not yet wired into the HF Qwen3.5 layers. That is a build item.
+  - *Other levers:*
+    - gradient checkpointing of the recurrence (recompute the states in
+      backward);
+    - flash-linear-attention's chunked kernel, which recomputes instead of
+      storing. It needs Triton, which likely does not support the P40
+      (sm_61) but would run on the 2060 (sm_75). To be checked.
 
 **If one P40 is not enough, in this order:**
-1. **The P40 alone,** with gradient checkpointing and split batches.
+1. **The P40 alone,** with e-BPTT chunks (or checkpointing) and split batches.
 2. **Pipeline across the P40 and the 2060 (user).** The 2060 keeps headroom
    for Minecraft, which uses about 1–2 GB of VRAM.
 3. **Pipeline across Bee and ai0 over the LAN (user).** At a stage boundary
