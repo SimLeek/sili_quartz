@@ -829,9 +829,27 @@ Dwarf Fortress are harder candidates for later.
   - It also has key press/release over `AI_SUPPORTED_KEYS` and mouse
     buttons.
   - The AI bridge is shared memory (`robonet/bridge`).
-- **Mouse:** the AI's mouse move is absolute (`moveTo` to a canvas position).
-  The user confirms that works for Minecraft's camera as is, so no
-  relative-move action is needed.
+- **Mouse:** the AI's mouse move is absolute (`moveTo` to a canvas position),
+  and that is enough. Games re-center the cursor every frame, so any move
+  away from the center reads as relative motion (user). The viewport can also
+  be shrunk in robonet.
+- **Keeping the AI in the game.** The machine has no internet and nothing
+  else on it, but leaving the game would still be annoying to find and undo.
+  - *Already blocked:* `AI_SUPPORTED_KEYS` has no Alt and no Super, so Alt+Tab,
+    Alt+F4 and the Super key are impossible.
+  - *Still possible:* Esc opens the pause menu, then "Save and Quit", then
+    "Quit Game" on the title screen.
+  - *Options*, from least to most invasive:
+    1. A per-endpoint key blocklist in robonet that drops Esc, and maybe F3
+       (F3+C forces a crash) and F11. E also closes the inventory, so Esc is
+       not needed to play.
+    2. A client mod that removes the quit and disconnect buttons. Trolledin
+       (Fabric) disables the disconnect button, Alt+F4 and exit keybinds, for
+       a recent version only. The Kiosk modpack is Windows 11 only, so it is
+       not usable here.
+    3. A watchdog that restarts Minecraft into the same world if its process
+       exits.
+  - Then let the AI learn to play from whatever it finds there.
 - **Measuring exploration without an oracle:** game-side information may be
   used for *evaluation only*, never as agent input. Minecraft's own
   per-player statistics file (blocks mined, distance travelled and so on)
