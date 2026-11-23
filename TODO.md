@@ -77,7 +77,19 @@ ledger, the cost quantified and never hidden.
    optimizer state per parameter. (The user had Gemini estimate how many bits
    per parameter each neurochemical is equivalent to.)
 
-## 2c. Sili energy port and model collapse
+## 2c. Sili energy port and model collapse — Done (PR #6) except the dialogue
+Results:
+- [pilot](docs/results/2026-11-22-collapse-pilot.md)
+- [site sweep + 4 seeds](docs/results/2026-11-23-collapse-site-sweep.md)
+- [energy vs loops](docs/results/2026-11-22-energy-vs-loops.md)
+
+Fixed-dose MLP + attention energy holds test perplexity at ~78 over 10
+self-trained generations, against greedy's 2025 and matched noise's 2294; this
+motivates 2d. Not run as written:
+- item 3, the two-model dialogue (the generational loop was run instead);
+- item 5's dose sweep down to 1e-6 and its n + k pass rule (doses run:
+  .001–.1 MLP-only and the per-site arms).
+
 Model collapse: a language model trained on another LM's samples, chained
 generation after generation, loses rare words first (the tails vanish) and
 eventually repeats forever (Shumailov et al., Nature 2024, "AI models collapse
@@ -115,9 +127,12 @@ The generational pilot (`examples/model_collapse.py`) comes before the dialogue.
      length a fixed limit in 1k–4k tokens.
 4. **Collapse metrics, per round:** rare-token mass (bottom tail of the
    original model's unigram distribution), distinct-n, longest repeated span /
-   repetition rate, perplexity on fixed real held-out text, a structure check
-   (original model's perplexity on the samples: LOW is not good, loops score
+   repetition rate, test perplexity (the student's, teacher-forced
+   on fixed real held-out text), and a structure check: the *original* model's
+   perplexity on the *generated* samples, where LOW is not good (loops score
    10x better than real text; see docs/results/2026-11-22-energy-vs-loops.md).
+   Plus free-running distinct-3: test perplexity always sees real context, so
+   it cannot see the student looping on its own output.
 5. **Arms:** energy off at T = 1 (expected: collapse by round n); temperature
    sweep (expected: tails kept, structure lost); energy dose sweep from tiny
    (1e-6, expected useless) up, to find the line. Pass = no collapse through
