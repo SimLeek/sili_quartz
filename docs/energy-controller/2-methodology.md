@@ -39,7 +39,11 @@ why.
 
 ## 2.3 Track P: prediction (accuracy is the extrinsic signal)
 
-**Model:** GameScaling-0.8B, the text path as in 2c.
+**Model:** GameScaling-0.8B's language-model head on text, as in 2c.
+- This is a predictor we can measure directly: next-token loss and test
+  perplexity on real text (20.7 at the start of 2c).
+- It is a *text* predictor, not a frame predictor. In Minecraft (track A)
+  GameScaling outputs actions only, with no frame-prediction output.
 
 **Experiment P-1, the loop test** (`loop_vs_temperature`-style; one run per
 arm; fast).
@@ -137,8 +141,8 @@ itself, and acts only through keys and the mouse.
 - *Central:* the output of transformer block `n_layers // 2`. For
   GameScaling's 24 layers that is `model.layers[12]`, a linear-attention
   block. It is projected to d ≤ 64.
-- *Output:* the prediction or action output, i.e. GameScaling's action-chunk
-  stream.
+- *Output:* GameScaling's action-chunk stream, its only output in track A.
+  It has no frame-prediction output to use.
 
 **Experiment A-0, setup checks** (no training).
 - GameScaling's vision path loads and runs on the P40, in the full
@@ -169,8 +173,10 @@ the single P40; staged, below).
   2. Does it improve it?
   3. Can a new init approach it?
   4. Does whole-model actor training also improve its internal prediction?
-     Check by probing the centre-block state for the next frame's features,
-     before and after training, as an evaluation only. The Dreamer/
+     There is no prediction output to read. The only measure is a probe: a
+     small readout trained on frozen centre-block states to predict the next
+     frame's features, fitted before and after training. It is used for
+     evaluation only and is never trained into the model. The Dreamer/
      Plan2Explore models stay separate (architecture 2).
 
 **Staged protocol (user): one P40, so runs go one at a time.**
