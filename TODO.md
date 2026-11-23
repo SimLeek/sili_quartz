@@ -52,7 +52,7 @@ ledger, the cost quantified and never hidden.
   one importance value; sili keeps no backprop state; a conventional engine with
   a one-value optimizer would be 2/3). Adam remains the diagnostic reference.
 - **e-BPTT** — torch first pass done (PR #4) → [details](#done-2b-ebptt).
-  Open items are under 7.
+  Open items are under 3b.
 
 1. **Bend proof first.** Prove that weights + optimizer state in fp4 with
    hadamard / additive LoRAs, plus annealing, can train and learn the recurrent
@@ -159,6 +159,39 @@ smallest controller that sets the dose, working before 3 and 4.
 - Stochastic selection has won every training-related comparison so far; it
   will change these properties too: include it as an arm, not a footnote.
 
+## 3b. Sparse row selection without starvation (before 4: its 1000-row subset needs good sparse training)
+Formerly 7, random top-k with error feedback. Error feedback (Seide 2014, Stich
+2018) stores a residual of the gradient's size, one value per synapse, which
+breaks the single-state budget (weight + importance, about 1 byte per synapse).
+The open question stays: is there a cheap, correct substitute? See sili__new
+`bend_proofs/noise_selected_credit/README.md` (error feedback section).
+
+**Hypotheses (user, 2026-11-22), not measured:** keep one number per input or
+output neuron, a selection penalty that rises each time the row is picked and
+decays otherwise. Add it to the selection score only, as in DeepSeek-V3's
+auxiliary-loss-free MoE load balancing (a per-expert bias, nudged by load).
+- **H1, coverage:** |G| top-k + penalty stops the stalls. In the e-BPTT sweep
+  every |G|-scored arm had a seed that stalled or collapsed, and noise at
+  p = .25 matched dense (9/11). Starvation of the same rows is the suspected
+  cause, not shown.
+- **H2, unbiased without a buffer:** sample rows with known probability p
+  shaped by |G| and the penalty, and divide each update by p. That is unbiased,
+  with variance as the remaining cost vs error feedback, not bias. The penalty
+  also keeps p from getting tiny, where 1/p blows up.
+- **Known gap vs error feedback:** a skipped row's gradient is dropped, not
+  deferred. Plain top-k + penalty is still biased: each row learns at a rate
+  set by how often it is picked, which the penalty only evens out.
+- **The same mechanism as energy:** it is EnergyDynamics' activation cost applied
+  to *being selected*. The torch port (`sili_quartz/energy.py`) may drive it as is.
+
+**Test:** the e-BPTT credit sweep with two added arms, (1) |G| top-k + penalty
+and (2) penalty-shaped sampling divided by p, against noise p = .25, |G| top-k
+and dense. Measure seeds reaching 0.95, worst seed, steps and wall time. Then
+small MQAR recurrent transformer models.
+- e-BPTT items still open: clean in-window test (episode inside one chunk);
+  more steps / seeds at gap 64; larger d for the wall-time saving; K-side
+  Jacobian.
+
 ## 4. HDD hippocampus
 1. Port sili cpu so that forward can add contribution to one subset of input
    rows while backward adds gradient + optimizer updates to another subset.
@@ -225,15 +258,6 @@ Get energy working for RL task solving too. Reading: "Energy-Based Reasoners:
 Your Recurrent Reasoner Should Be an Energy-Based Model" (Chen, Gladstone, Li,
 Ji, Du; arXiv 2611.08977). Its "energy" is a learned scalar over latent
 reasoning states, not sili's neuron energy: see 2d, which may absorb this.
-
-## 7. Random top-k with error feedback
-Implement and test random top-k with error feedback on small MQAR recurrent
-transformer models. See sili__new `bend_proofs/noise_selected_credit/README.md`
-(error feedback section). Open question: does a cheap, correct error feedback
-exist for this setting, or not?
-- e-BPTT items still open: clean in-window test (episode inside one chunk);
-  more steps / seeds at gap 64; larger d for the wall-time saving; K-side
-  Jacobian.
 
 ## Finale: train on new video games
 Test by training on video games the model hasn't seen: actual games, not
