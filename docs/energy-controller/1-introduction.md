@@ -650,6 +650,86 @@ like):
     (sensors only) fits the first agent;
   - how the health floor is chosen.
 
+## 1.11 The candidate models (user, 2026-11-23)
+
+Two tracks, set by what extrinsic signal exists:
+- **P, prediction.** Prediction accuracy is the extrinsic signal. This is
+  next-token training and the collapse loop.
+- **A, actor.** RL with **no extrinsic signal at all**. The actor may be a
+  different model from the predictor.
+
+**No oracles.** Each model may use only what it could see in deployment:
+- P may use its training targets (the data), because that *is* its signal.
+- A may use only the agent's own sensor and action stream and its own
+  internal state.
+- Nothing may use test sets, labels, hand-tuned per-task schedules, or the
+  game score.
+
+### Shared parts (built once, used by several models)
+
+| Part | What it computes | Used by |
+|---|---|---|
+| Energy | fixed: `sili_quartz/energy.py` with `energy_hooks.py` | all |
+| Effect meter | KL(p_energy ‖ p_clean) on next-step outputs, on sampled steps | P1, P2 |
+| Surprise meter | running −log p of the model's own output | P0b, P1 |
+| Learning-progress meter | short- and long-window drop in loss | P2 |
+| Forward model | predicts the next state (the predictable part, SuperMimic-like) | A1, A2 |
+| MI estimator | I(past; future) or I(actions; future) from the forward model's errors | A1, A2, A3 |
+| Health stats | dormant fraction, rank, branching ratio, energy shutoff fraction | constraint in A; logged in P |
+| Dual update | λ ← max(0, λ + η·(floor − health)) | A1, A2, A3 |
+
+### Track P: prediction
+
+| Model | What it is | Relation |
+|---|---|---|
+| P0a | no energy | baseline |
+| P0b | Mirostat on tokens, no energy | baseline (the 2d requirement) |
+| P0c | fixed energy dose (the 2c configuration) | baseline |
+| **P1** | dose held at an effect target δ (Plappert ×/÷1.01); δ moved by surprise against τ (Mirostat integral) | new |
+| P1a | P1 with δ fixed | ablation: no surprise loop |
+| P1b | surprise moves the cost directly, with no effect meter | ablation: no effect normalization |
+| **P2** | two-timescale engagement (Aston-Jones & Cohen Eq. 1) with utility = learning progress; low engagement re-melts | new; replaces P1's fixed τ |
+| P2a | P2 with one timescale | ablation |
+| P2+A | P2 plus an amygdala-style learning rate that rises with unsigned surprise | small change, extra arm |
+| ×R/D | for P1 and P2: move cost only, or noise (random) and drive (directed) separately | ablation applied to both |
+
+The tests, in order:
+1. the loop test (one run, CPU or GPU);
+2. the collapse loop (does P2 re-melt where the fixed dose sat at loss 0.008?).
+
+### Track A: actor, no extrinsic signal
+
+| Model | Objective | Relation |
+|---|---|---|
+| **A1** | maximize predictive information I(past; future) of the agent's stream, subject to health ≥ floor. The dual λ is the dose controller. | new, main model |
+| A1−act | A1 with the agent's own actions left out of the stream | ablation (user) |
+| A1+self | A1 with an extra head that predicts the agent's own next action | ablation (user) |
+| A1−λ | A1 with no health constraint | ablation: is the constraint needed? |
+| **A2** | maximize empowerment I(actions; future sensors), same constraint | sibling of A1: "past" replaced by "actions" |
+| **A3** | maximize I(region A past; region B future), different inputs per region (IMAX-like), same constraint | variant: the "external" side is another region; no forward model of the world |
+| A1+bored | A1 plus a rate rule: raise the dose when the rate of information gain falls below its running average (Niv-style opportunity cost) | small change: alternative or extra to λ |
+| **L** | sili's learned prefrontal regulator: sets per-region targets for A1/A2, trained on the same objective | later; slow tier on top of A |
+
+**How the models relate:**
+- A1 with actions in the stream contains an empowerment-like term, so A1 and
+  A2 differ mainly in whether "past" means all of the past or only the agent's
+  own actions.
+- A3 is A1 with the world replaced by another region.
+
+**A first environment:** a small one with no reward. The finale's real games
+come later.
+
+### Open choices before the methodology part
+
+- **The MI estimator.** Der's linear/Gaussian version is cheapest; a contrastive
+  bound (InfoNCE-style) is the alternative. Both are prediction-error based, so
+  neither needs an oracle.
+- **The health floor.** A fixed setpoint, or a level from the agent's own
+  history? A fixed one is a hand-set constant, so it should be stated as such.
+- **Whether the predictor (track P) and the actor (track A) share a network.**
+  The user's expectation: the actor may work best as a separate model.
+- **Per region or global dose** for every model.
+
 ## 1.9 Search again in a later pass
 
 - Mirostat's appendix: the Zipf estimate, and the alternative token-iteration
