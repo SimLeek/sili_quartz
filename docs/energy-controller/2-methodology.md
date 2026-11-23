@@ -194,6 +194,45 @@ performance claims use the final three seeds.
 **Experiment A-2, later:** sili's learned prefrontal regulator (L) setting
 per-region targets, trained on the same objective.
 
+## 2.4a Compute (user, 2026-11-23)
+
+**Hardware:**
+- *Sandbox (Bee):* the P40 (24 GB, fp32 compute, no fast bf16) and the RTX
+  2060. The 2060 drives the display and also runs Minecraft.
+- *ai0:* GPUs on the same LAN.
+
+**Memory estimate for training GameScaling-0.8B on the P40.** These are
+estimates, measured in A-0 before any choice:
+- *Fixed cost:* fp32 weights about 3.4 GB, gradients about 3.4 GB, AdamW
+  state about 6.8 GB. About 13.6 GB before activations.
+- *Activations:*
+  - One 800 × 600 viewport frame is about 470 vision tokens (patch 16, merge
+    2), and each call also carries a history of frames.
+  - Linear-attention backprop keeps about 1 MiB per token per layer, measured
+    in 2c. Backprop through 2k tokens across 24 layers would be about 48 GiB.
+  - So, as in 2c, split the batch and checkpoint gradients first.
+
+**If one P40 is not enough, in this order:**
+1. **The P40 alone,** with gradient checkpointing and split batches.
+2. **Pipeline across the P40 and the 2060 (user).** The 2060 keeps headroom
+   for Minecraft, which uses about 1–2 GB of VRAM.
+3. **Pipeline across Bee and ai0 over the LAN (user).** At a stage boundary
+   the activation is tokens × 1024 × 4 bytes, about 8 MB for 2k tokens, each
+   way. Over gigabit that is about 65 ms per direction per micro-batch.
+
+**Latency is a separate constraint.** The game runs in real time and does not
+pause between calls, unlike GameScaling's own evaluation, which pauses the
+game for each model call.
+- Each call must return within the 200 ms chunk it plans, or the agent falls
+  behind.
+- Pipelining adds memory, not speed. For one live agent it *adds* latency,
+  more so across the LAN.
+- A-0 measures inference latency on the P40. If it is over budget, the
+  levers are a smaller viewport, fewer history frames, or no thinking
+  tokens.
+- Training updates can run asynchronously from acting, on a replay of the
+  last stretch of play.
+
 ## 2.5 Order
 
 1. Build the shared meters (2.2).
@@ -207,3 +246,4 @@ per-region targets, trained on the same objective.
 - The compression-ratio thresholds, from A-0's normal play and from a random
   policy.
 - The exact Minecraft version: whichever the no-quit mod supports.
+- Whether training fits on the P40 alone, and the inference latency (A-0).
