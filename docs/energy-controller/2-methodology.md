@@ -45,6 +45,13 @@ why.
 - It is a *text* predictor, not a frame predictor. In Minecraft (track A)
   GameScaling outputs actions only, with no frame-prediction output.
 
+**Environment: text, WikiText-2** (raw, the same files as 2c, in
+`~/collapse/data` on the sandbox). Track A's environment is Minecraft.
+- *P-1:* looped and real prompts from the WikiText-2 test split.
+- *P-2:* prompts and the real control's data are fresh 64-token blocks of the
+  train split each generation. Test perplexity uses 128 fixed blocks of the
+  test split.
+
 **Experiment P-1, the loop test** (`loop_vs_temperature`-style; one run per
 arm; fast).
 - **Arms:** P0a no energy; P0b Mirostat; P0c fixed dose; P1; P1a; P1b; and
