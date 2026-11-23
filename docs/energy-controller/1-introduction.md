@@ -1,10 +1,17 @@
-# 1. Introduction and related work (first pass, 2026-11-23)
+# 1. Introduction and related work (2026-11-23)
 
-**Status:** first pass, written before any methodology was chosen. It comes
-from web search snippets, abstracts, and papers already cited in sili
-(`sili__new/CITATIONS.md`, `energy-params.md`). Where only a snippet or abstract
-was read, the entry says so. Entries marked *unverified* are recent preprints
-whose results were not checked.
+**Status:** second pass, written before any methodology was chosen.
+- **1.1–1.3** (first pass) come from web-search snippets, abstracts, and papers
+  already cited in sili (`sili__new/CITATIONS.md`, `energy-params.md`).
+- **1.4–1.8** (second pass) read four papers in full:
+  - Mirostat;
+  - SAC, section 5;
+  - Plappert et al., section 3 and appendix C;
+  - Aston-Jones & Cohen 2005.
+
+  The rest is from abstracts.
+- Entries say when only a snippet or abstract was read. *Unverified* marks
+  recent preprints whose results were not checked.
 
 ## 1.1 The question
 
@@ -167,133 +174,388 @@ with drive tied to it as cost × mean |h|, plus the noise and decay.
   - Relevant to energy_rl's original job of breaking stable attractors and
     zero-init deadlocks.
 
-## 1.4 Controllers: who sets the dose, and how
+## 1.4 The shape we are looking for: between boredom and confusion
 
-No controller was found for a per-neuron homeostatic dose in a backprop
-network. What exists controls analogous *global* knobs. The pattern is
-consistent across all of them.
+Basu et al. (Mirostat, ICLR 2021) name the two failure ends of text generation:
+- **The boredom trap:** cross-entropy falls as the text gets longer, and
+  repetition grows.
+- **The confusion trap:** cross-entropy rises with length, and the text becomes
+  incoherent.
 
-### Simple feedback on one measured statistic, toward a target
+Human text does neither. Its cross-entropy converges to a limit as it gets
+longer. These are the same two ends as our results: loops on one side,
+gibberish on the other (temperature 1.3, and penalty 1.5's 17k perplexity).
 
-- **Mirostat.** Basu et al., ICLR 2021, arXiv 2007.14966.
-  - Targets a surprise τ per token, by feedback on top-k: μ ← μ − η·(observed
-    surprise − τ).
-  - Names a "boredom trap" (repetition at low k) and a "confusion trap"
-    (incoherence at high k). These are our loop and gibberish ends.
-  - Controls token sampling, not neurons. TODO 2d's baseline.
-- **EDT.** Zhang, Bao & Huang, arXiv 2403.14541: temperature set per token from
-  the model's entropy.
-- **EOS** (Purdue): an online inverse temperature that tracks an
-  entropy-constrained optimum.
-- **SAC automatic temperature.** Haarnoja et al., arXiv 1812.05905.
-  - Entropy is a constraint and the temperature is its dual variable, updated
-    by gradient to keep policy entropy at a target.
-  - The target entropy is still a hand-set number. Meta-SAC (arXiv 2007.01932)
-    learns it by metagradient.
-- **Adaptive parameter-space noise.** Plappert et al., ICLR 2018, arXiv
-  1706.01905.
-  - Weight noise σ is rescaled every K steps by a fixed factor, up or down,
-    so that the *effect* of the noise (distance between clean and noisy
-    policy) stays at a threshold δ.
-  - Structurally the closest: it sets a perturbation dose by its measured
-    effect, not its size. That is what per-site scaling did for energy.
-  - A 2026 RLVR paper reuses it with a KL target (arXiv 2602.02555).
-- **Adaptive entropy coefficient for LLM RL.** AER, arXiv 2510.10959. Fixed
-  entropy coefficients are hard to tune (too high and entropy explodes, too
-  low and nothing happens), so it adapts the coefficient. This is one of
-  several 2025 fixes for entropy collapse in RLVR.
-- **Per-unit feedback:** HTM boosting (duty cycle → boost) and DeepSeek-V3's
-  bias-based MoE load balancing (load → routing bias). Both are per-unit
-  feedback controllers of selection, with a fixed gain.
+Energy already acts on both ends locally:
+- Shutoff stops overused neurons.
+- Forced firing wakes unused ones.
+- The density target and the hard ceiling bound how much can be active.
 
-### A slower, learned selector on top
+What energy cannot know is *where* the two thresholds sit for a given model,
+text or moment. A fixed dose put the student in the boredom trap: training
+loss 0.008, distinct-3 0.086. So **the controller's job is to place energy
+between the two traps, and keep it there as the situation changes.** It does
+not replace energy.
 
-- **Agent57.** Badia et al., ICML 2020, arXiv 2003.13350.
-  - A sliding-window UCB bandit per actor chooses among fixed (intrinsic
-    weight β, discount γ) pairs, rewarded by *extrinsic* episode return.
-  - The closest published controller of an intrinsic-exploration dose. It
-    picks a preset arm on episode timescales; it does not track a statistic
-    per step.
-- **PBT / PB2** (Jaderberg et al., arXiv 1711.09846; a GP-bandit version):
-  hyperparameters are copied and perturbed across a population by fitness.
-- **Learning progress.** Oudeyer, Kaplan & Hafner 2007, IEEE TEC.
-  - Choose where to explore by learning progress, the drop in prediction
-    error: situations "neither too predictable nor too unpredictable".
-  - It is a signal, not a dose controller, and the nearest literature match to
-    "raise the dose to learn".
+The rest of this part looks at each system that controls something across
+those two ends. For each one it asks three things:
+1. What does it measure?
+2. What does it move, and by what rule?
+3. Is it two-sided, and does it need an extrinsic reward?
 
-### Biology: one fast and one slow loop
+The plan is to train with **no extrinsic reward at all** (user, 2026-11-23).
 
-- **Adaptive gain theory.** Aston-Jones & Cohen 2005, Annu. Rev. Neurosci.
-  28:403–450.
-  - Locus coeruleus norepinephrine has a phasic mode (gain on the current
-    task: exploit) and a tonic mode (disengage and search: explore).
-  - The switch is driven by utility estimates in orbitofrontal and anterior
-    cingulate cortex.
-  - Human tests are mixed: one reboxetine study failed to find the effect, and
-    pupillometry studies support it.
-- **Metalearning and neuromodulation.** Doya 2002, Neural Networks
-  15:495–506.
-  - Neuromodulators as the brain's hyperparameters: dopamine for TD error,
-    serotonin for discount, noradrenaline for the randomness of action choice
-    (inverse temperature), acetylcholine for the learning rate.
-- **Uncertainty, neuromodulation and attention.** Yu & Dayan 2005, Neuron
-  46:681–692. Acetylcholine tracks *expected* uncertainty, norepinephrine
-  *unexpected* uncertainty (surprise or change).
-- **Homeostatic RL.** Keramati & Gutkin, eLife 2014: reward is the predicted
-  reduction in distance of an internal state from its setpoint. In that frame
-  energy's setpoint loss is a reward, which bears on item 6.
-- **Backpropamine.** Miconi et al., ICLR 2019, arXiv 2002.10585: a network
-  outputs its own neuromodulatory signal that gates plasticity, trained
-  end to end. A learned modulator, but of plasticity, not of excitability.
-- **sili's own design** (`energy-params.md`, "The Prefrontal Meta-Controller")
-  already describes a learned regulator. It reads energy maps per region, sets
-  {drive, cost, noise, setpoint, reactivity, density, precision} within a
-  stable range, and is itself homeostatic.
+## 1.5 Computer science systems, in detail
 
-## 1.5 What this first pass found
+### Mirostat: integral control of surprise
 
-1. **No complete precedent was found.** Nothing found has all of these at once:
-   - a per-neuron integrate-and-fire energy that forces firing on disuse *and*
-     shuts off on overuse;
-   - noise in the energy;
-   - running at inference and in training;
-   - inside a pretrained, backprop-trained LLM.
+Read in full: arXiv 2007.14966.
 
-   The halves exist separately. k-winners boosting and the adaptive thresholds
-   are the disuse side; neuronal fatigue and repetition suppression are the
-   overuse side. Repetition neurons show the overuse side is where LLM loops
-   live.
-2. **No controller for a per-neuron homeostatic dose was found.** Controllers
-   exist for global analogues: temperature (Mirostat, EDT), entropy
-   coefficient (SAC, AER), noise scale (Plappert), exploration mix (Agent57).
-3. **The program-vs-AI split has a consistent answer in the literature.** It
-   is two tiers:
-   - *fast*: a simple feedback program that holds one measured statistic at a
-     target (Mirostat, SAC alpha, Plappert, boosting);
-   - *slow*: a learned or bandit selector that sets the target, or picks among
-     presets, from task outcome (Agent57 on return, PBT, Meta-SAC, learning
-     progress).
+- **Measures:** the surprise S(X) = −log p(X) of each sampled token.
+- **Moves:** top-k, through a variable µ that starts at 2τ. k comes from µ and
+  a Zipf exponent fitted to the top 100 probabilities each step.
+- **Rule:** e = S(X) − τ, then µ ← µ − η·e. The error is summed into µ, which
+  makes this an **integral controller** on one statistic, with a hand-set
+  target τ.
+- **Two-sided:** yes. Surprise above τ tightens k; surprise below τ widens it.
+- **Extrinsic reward:** none needed.
+- **Evidence:**
+  - Repetition is close to linear in observed cross-entropy, and once the
+    model and the cross-entropy are fixed, it hardly depends on the sampler
+    (top-k, top-p, temperature). So *one statistic, surprise, locates both
+    traps*.
+  - Sentence-level repetition disappears above about 3 nats.
+  - 43 human raters preferred τ = 3 for fluency, coherence and quality, and
+    more than half took that text for human-written (GPT-2 117M, 300 tokens).
+  - It saturates above about 5 nats, the model's untruncated surprise: it can
+    only cut the tail, not add surprise.
+- **Limits for us:**
+  - It acts on the token distribution only, after the model has computed. A
+    loop that lives in the hidden state (repetition neurons) is only steered
+    from outside.
+  - τ is hand-set and model-specific.
+  - It cannot push surprise *above* the model's own level. Energy can, because
+    it changes the computation itself.
 
-   Biology's adaptive-gain account has the same shape: fast phasic/tonic
-   switching, set by slower frontal utility estimates. This is a candidate
-   for the methodology, not a decision.
-4. **Candidate signals, for the methodology stage:**
-   - surprise against a target (Mirostat);
-   - repetition-neuron activity, or energy's own shut-off fraction, as a
-     "bored" signal (2 to 13× more neurons switched off on loops);
-   - learning progress (the change in loss);
-   - the training-loss floor (0.008 at the fixed dose);
-   - extrinsic return where there is one;
-   - expected vs unexpected uncertainty;
-   - health statistics already in sili: branching ratio, dormant fraction.
-5. **Search again in pass two:**
-   - exact update rules: the HTM boost function, Plappert's σ update, the
-     Agent57 window and arms, the SAC target-entropy defaults;
-   - the *unverified* preprints: grokking thresholds, AHSAR, residual-noise
-     loop breaking, metabolically driven spikes;
-   - whether anyone applies homeostatic excitability inside transformers
-     during training, since these searches found none.
+### Soft actor-critic: a dual variable on an entropy floor
+
+Read in full: arXiv 1812.05905, section 5.
+
+- **Measures:** policy entropy, −log π(a|s), averaged over visited states.
+- **Moves:** the temperature α, by gradient on J(α) = E[−α log π(a|s) − α·H̄].
+  α is the dual variable of the constraint "average entropy ≥ H̄". α rises when
+  entropy is below H̄ and falls toward 0 when it is above.
+- **Two-sided:** no. It is a **floor only**. The paper drops the upper bound
+  because return already pushes the policy toward determinism, so the other
+  side comes from the reward.
+- **Extrinsic reward:** required for that other side. Without it, nothing pulls
+  entropy down; on its own it guards only against boredom.
+- **Worth keeping:**
+  - The constraint is on the *average*, so entropy may differ by state: explore
+    where uncertain, stay deterministic where the answer is clear. A per-region
+    or per-token dose should keep that freedom.
+  - The target is still a hand heuristic (−dim A), and later work learns it
+    (Meta-SAC) or anneals it.
+
+### Plappert et al.: dose set by its measured effect
+
+Read in full: arXiv 1706.01905, section 3 and appendix C.
+
+- **Measures:** the *effect* of the perturbation, d(π, π̃), the distance
+  between the clean and the perturbed policy. For DQN it is the KL between
+  their softmax policies. For DDPG it is the RMS action difference.
+- **Moves:** the weight-noise scale σ. **Rule:** σ ← 1.01·σ if d ≤ δ, else
+  σ ← σ/1.01. This is a two-sided bang-bang multiplicative controller.
+  - It updates every 50 steps for DQN.
+  - The perturbation is held for a whole episode, so exploration is consistent
+    within a state rather than per-step jitter.
+- **Choosing δ:** δ is not tuned. It is set equal to the effect of a familiar
+  dose: the KL of ε-greedy, −log(1 − ε + ε/|A|), or the σ of action noise.
+- **Why it is needed:** the right σ depends on the architecture and drifts
+  during training, as parameters get more sensitive. Layer norm between
+  perturbed layers lets one σ serve every layer.
+- **Two-sided:** yes, around the effect.
+- **Extrinsic reward:** not needed. The controller only looks at the two
+  policies; the reward is used by the learner, not by the controller.
+- **Evidence:** only parameter noise learned at all in SparseCartpoleSwingup
+  and SparseMountainCar; all action noise never found a reward. The authors
+  warn that gains are case by case.
+- **The closest structure to our problem:**
+  - Our per-site scaling already makes one cost mean the same dose at every
+    site, by dividing by each site's mean |h|, the way their layer norm does.
+  - Our loop tests already measured energy's effect in nats: energy broke loops
+    at about 1–1.5 nats of damage, where matched noise did not.
+  - The obvious controlled variable is therefore the KL between next-token
+    distributions with energy on and off.
+
+### Curiosity and its trap; counts and learning progress
+
+- **Prediction-error curiosity** (Schmidhuber 1991; Pathak 2017; Burda et al.
+  2018, arXiv 1808.04355) rewards what the model fails to predict.
+  - That escapes boredom and then heads straight into confusion: the "noisy TV".
+    A TV with a channel-change action greatly slows learning.
+  - A poor model or partial observability causes the same trap as true noise.
+  - One-sided.
+- **Count-based exploration** (Bellemare et al. 2016, pseudo-counts) rewards
+  what has been *visited* least, not what is least predictable. It reliably
+  avoids noisy TVs in minigrid, but is hard to apply to large state spaces.
+- **Learning progress** (Oudeyer, Kaplan & Hafner 2007) rewards the *drop* in
+  prediction error. That rules out the boring (nothing left to learn) and the
+  hopelessly noisy (no progress possible): "neither too predictable nor too
+  unpredictable". It is two-sided, because both traps give zero progress.
+- **Where energy fits:** energy's forced firing of disused neurons is a
+  **count bonus over neurons**. A neuron's energy rises with *how long it has
+  gone unused*, not with surprise. So energy is closer to count-based than to
+  curiosity-based exploration, the family that resists the noisy TV.
+
+### Directed and random exploration
+
+Wilson et al. 2014 (J Exp Psychol Gen): people use two separable strategies,
+and use more of both when the horizon is longer:
+- *directed* exploration: an information bonus toward the less-known option;
+- *random* exploration: decision noise.
+
+Pupil studies tie norepinephrine to the random kind, not the directed one.
+Energy has both:
+- **random:** the noise term in energy, `exploration`;
+- **directed:** forced firing of the least-used neurons, as above.
+
+A controller can set them separately.
+
+### Agent57: ruled out
+
+- **What it does:** a sliding-window UCB bandit picks the intrinsic-reward
+  weight and the discount, *rewarded by extrinsic episode return*.
+- **Why it doesn't fit:** with no game score there is nothing to reward the
+  bandit.
+- **What carries over:** only its structure, a slow selector over a few preset
+  regimes. That would need an intrinsic score in place of the game score.
+
+## 1.6 Biology, in detail
+
+### Locus coeruleus and norepinephrine: adaptive gain
+
+Read in full: Aston-Jones & Cohen 2005, Annu. Rev. Neurosci. 28:403–450.
+
+- **What NE does:** it raises the *gain*, the slope of the sigmoid, of target
+  neurons. That strengthens both excitatory and inhibitory responses and
+  pushes units toward binary responding.
+- **Two modes:**
+  - *Phasic:* moderate baseline, with bursts locked to task-relevant decisions.
+    Performance is accurate. This is exploitation.
+  - *Tonic:* high baseline and no bursts, so gain rises everywhere and
+    indiscriminately. Behavior is distractible. This is exploration.
+  - *Low tonic:* drowsy and disengaged.
+- **Performance follows an inverted U of tonic activity**, the Yerkes–Dodson
+  curve. The authors call the modes the ends of a continuum.
+- **The mode switch, in the model:** weaker electrotonic coupling between LC
+  neurons gives the tonic mode, and so does more baseline excitatory drive.
+  Stronger coupling and less drive give the phasic mode. One or two physical
+  parameters set the regime.
+- **What sets the mode: utility, from frontal cortex.**
+  - Orbitofrontal cortex (OFC) evaluates reward.
+  - Anterior cingulate (ACC) evaluates cost: errors, conflict, difficulty, pain.
+  - These are the main cortical inputs to the monkey LC.
+  - Utility is averaged over a short (seconds) and a long (minutes) window,
+    and combined:
+
+        engagement = [1 − logistic(short-term utility)] · logistic(long-term utility)
+
+  - **When long-term utility is high,** a short-term drop *raises*
+    engagement (phasic), repairing a lapse.
+  - **When long-term utility stays low,** engagement falls and LC turns tonic:
+    disengage and explore.
+- **Explicitly annealing.** The authors call exploration "akin to annealing":
+  - start with high noise in a new environment;
+  - lower it as valuable states are found;
+  - **re-melt** (raise noise again) when utility collapses.
+
+  This is our raise-to-explore, lower-to-focus, with the re-melt as the
+  escape from a stale attractor.
+- **Evidence:**
+  - *For:* in pupillometry, Gilzenrat et al. 2010 found that falling long-term
+    utility and disengagement went with a larger baseline pupil and smaller
+    dilations, which is the tonic signature. Jepma & Nieuwenhuis 2011 found
+    that a larger baseline pupil came before exploratory choices.
+  - *Against:* raising NE with reboxetine did not increase exploration (Jepma
+    et al. 2010).
+  - So NE plausibly tracks *random* exploration, and causation is unsettled.
+
+### Amygdala: surprise sets how much to attend and learn
+
+- **The Pearce–Hall link:** amygdala neurons carry the Pearce–Hall
+  associability signal, where attention and learning rate follow recent
+  *unsigned* surprise.
+  - *Basolateral amygdala* (Roesch, Calu, Esber & Schoenbaum 2010, J Neurosci):
+    neurons fire more right after a reward changes, and that predicts faster
+    orienting on later trials. Inactivating them blocks both the orienting and
+    the learning after a change.
+  - *Central nucleus* (Calu et al. 2010, Neuron): neurons fire when an expected
+    reward is omitted, and decline as learning catches up.
+  - *Dopamine:* the basolateral signal needs midbrain dopamine (Esber et al.
+    2012).
+- **It is a learning-rate controller:** high recent surprise means learn faster
+  and attend more, and it decays as prediction recovers. This is the "raise to
+  learn new things" half, driven by surprise magnitude, not by reward.
+- **Novelty and salience:** the amygdala tags novelty as a separate affective
+  dimension. LC–amygdala coupling rises during novelty.
+- **Anxiety:** anxiety goes with *less* exploration under uncertainty (2023–2024
+  computational reviews). The amygdala's specific part in that is not
+  established; one human study found insula, not amygdala, activity for
+  sensory uncertainty. This is the brake side: a threat or uncertainty signal
+  that narrows exploration.
+
+### Prefrontal cortex: where the targets come from
+
+- **OFC** carries value, and **ACC** carries cost and conflict; together they
+  are the utility inputs to LC above.
+- **Expected value of control** (Shenhav, Botvinick & Cohen 2013, Neuron):
+  dorsal ACC decides *how much* control to allocate. It weighs the expected
+  payoff of control against its cost: a controller of a dose, set by value
+  minus effort.
+- **Frontopolar cortex** (Daw et al. 2006, Nature) is more active on
+  exploratory choices. Those choices fit a value-sensitive softmax (random
+  exploration scaled by value differences) better than ε-greedy. An
+  uncertainty bonus added nothing at the best fit.
+- **Doya 2002:** neuromodulators as hyperparameters. Dopamine is the TD error,
+  serotonin the discount, noradrenaline the inverse temperature, acetylcholine
+  the learning rate.
+- **Yu & Dayan 2005:** acetylcholine signals *expected* uncertainty and
+  norepinephrine *unexpected* uncertainty.
+
+### sili's own learned "prefrontal" regulator
+
+From `sili__new/energy-params.md`, "The Prefrontal Meta-Controller".
+
+- **What it reads:** each region's energy map, as an image (near-firing, in
+  refractory, and spatial structure), through a convolutional or attention
+  model.
+- **What it sets, per region:** drive, cost, noise, setpoint, reactivity,
+  density and KL weight.
+- **Its constraints:**
+  - outputs stay inside the stable subspace;
+  - it is itself an energy-regulated RNN, so it is homeostatic too.
+- **The file maps regimes to parameter directions:**
+  - *focus/flow:* noise ↓, KL ↑, reactivity ↑;
+  - *curiosity:* noise ↑, cost ↓;
+  - *sleep:* drive ↓, noise ↓, reactivity ↑;
+  - *anxiety:* setpoint ↓, reactivity ↑, drive ↑;
+  - *mania:* drive ↑↑, setpoint ↑↑, KL ↓.
+- **Compared with biology:** it is the closest to the frontal tier, a learned
+  reader of internal state that outputs regime parameters.
+- **What it leaves open:** the training signal. It does not say what the
+  controller is optimizing when there is no extrinsic reward.
+
+## 1.7 Side by side
+
+| System | Measures | Moves | Rule | Two-sided | Extrinsic reward | Timescale |
+|---|---|---|---|---|---|---|
+| Mirostat | token surprise | top-k (via µ) | integral: µ ← µ − η(S − τ) | yes | no | per token |
+| SAC α | mean policy entropy | temperature α | dual gradient on an entropy floor | **no** (floor) | yes, for the other side | per update |
+| Plappert | KL(clean ‖ perturbed) | noise σ | ×1.01 or ÷1.01 around δ | yes | no | every 50 steps |
+| Prediction-error curiosity | prediction error | intrinsic reward | maximize | **no** (noisy TV) | no | per step |
+| Learning progress | drop in prediction error | where to explore | maximize | yes | no | windowed |
+| HTM boosting / k-WTA | duty cycle per unit | per-unit boost | fixed gain | one-sided (disuse) | no | running average |
+| Agent57 | episode return | (β, γ) preset | sliding-window UCB | yes | **yes** | episodes |
+| LC-NE adaptive gain | utility (OFC reward, ACC cost), 2 windows | gain; tonic vs phasic | engagement = (1 − σ(u_s))·σ(u_l) | yes, inverted U | utility, can be internal | seconds and minutes |
+| Amygdala (Pearce–Hall) | unsigned surprise | attention, learning rate | rises with surprise, decays with learning | yes | no | trials |
+| ACC (EVC) | payoff − cost of control | amount of control | maximize net value | yes | value, can be internal | trials |
+| sili prefrontal regulator | energy maps per region | the 7 energy parameters | learned, within the stable subspace | yes | open | slow |
+| **sili energy itself** | per-neuron use | fire or shutoff per neuron | integrate and fire | yes, per neuron | no | per step |
+
+Similarities with our idea:
+1. **The two-sided ones agree on the method.** Mirostat, Plappert and LC-NE all
+   regulate around a target, and all use a *measured* quantity rather than a
+   fixed dose: surprise, the perturbation's effect, utility.
+2. **Plappert and our per-site scaling make the same move:** normalize the
+   perturbation by its effect, so one setting means the same thing everywhere.
+3. **Energy's directed half is count-like,** the family that avoids the noisy
+   TV. Its random half is NE-like.
+4. **Biology splits the work in three:**
+   - a fast gain or noise level (LC);
+   - a surprise-driven learning rate (amygdala);
+   - slow, two-timescale utility that sets the regime (OFC, ACC).
+
+   sili's regulator corresponds to the slow tier.
+
+Differences:
+1. Every computer-science controller sets *one global* knob. Energy is per
+   neuron, and the controller sets how those per-neuron rules behave (dose,
+   noise, setpoint), maybe per region.
+2. Mirostat and SAC act on the output distribution. Energy changes the
+   computation, so it can raise surprise above the model's own level, where
+   Mirostat saturates.
+3. The biological "utility" is reward-based. With no extrinsic reward it has to
+   be internal: prediction success, learning progress, or homeostatic error
+   (Keramati & Gutkin: reward is the reduction of deviation from a setpoint).
+
+## 1.8 What this implies we should build, and why
+
+**Ruled out:**
+- Agent57, because it needs a game score.
+- SAC's floor on its own, because without reward nothing pulls the other way.
+- Prediction-error curiosity as the signal, because of the noisy TV.
+
+**Candidate 1, the fast tier, a simple program.** Hold the effect of energy at
+a target, Plappert style, and move that target with surprise, Mirostat style:
+- *Measured effect:* d = KL(p_energy ‖ p_clean) on next-token distributions.
+  That is one extra forward pass without energy, or a sampled subset of
+  steps.
+- *Dose rule:* cost ← cost·1.01 if d < δ, else cost/1.01.
+- *Target rule:* δ ← δ + η·(τ − S̄), integral control. S̄ is the running
+  surprise of the model's own output.
+  - Bored (S̄ < τ) raises δ, so more energy.
+  - Confused (S̄ > τ) lowers it.
+- *Starting values:* δ from what broke loops in our tests (about 1–1.5 nats
+  over a window, to be converted to per-token). τ from Mirostat's human-text
+  range (about 3 nats on GPT-2), checked against real text for this model.
+- *Why first:* it is two-sided, needs no extrinsic reward, has two parameters
+  with published defaults, and runs inside one run. It also gives the direct
+  comparison to Mirostat that TODO 2d asks for.
+
+**Candidate 2, two timescales, LC style.** Replace the single target with
+Aston-Jones & Cohen's engagement equation, using an internal utility:
+- *Utility:* learning progress, the drop in the student's loss on its own data,
+  over a short and a long window.
+- *Engagement high:* focus. Lower noise, keep the dose.
+- *Engagement low:* re-melt. Raise drive and noise.
+- *Why:* this is the only model that says when to *re-explore after settling*.
+  That is exactly the fixed-dose failure we saw, where the loss hit 0.008 and
+  nothing changed it. A loss floor means no learning progress, so the re-melt
+  would trigger there.
+
+**Candidate 3, the slow tier, learned: sili's prefrontal regulator.**
+- *What it does:* it learns per-region targets for candidates 1 and 2, reading
+  the energy maps.
+- *Its training signal:* learning progress, or homeostatic reward.
+- *When:* after 1 and 2 show which statistics matter. Its training signal is
+  the open question, and biology suggests it sets targets slowly rather than
+  doses quickly.
+
+**Recommended order for the methodology:**
+1. Candidate 1 in the loop test, against fixed doses and Mirostat.
+2. Candidate 2 in the collapse loop, where re-melting can be tested.
+3. Candidate 3 last.
+
+An amygdala-style term, a learning rate that rises with unsigned surprise, is
+a natural extra arm for candidate 2. It is separate from the energy dose, and
+the amygdala literature treats it as a separate system.
+
+**Not yet decided:**
+- whether the dose is per region or global;
+- which energy parameters the fast tier moves (cost only, or noise and drive
+  separately, for random vs directed exploration);
+- how often the clean forward pass for d is run.
+
+## 1.9 Search again in a later pass
+
+- Mirostat's appendix: the Zipf estimate, and the alternative token-iteration
+  version (appendix E).
+- The Gilzenrat 2010 and Jepma & Nieuwenhuis 2011 full texts: the exact
+  utility windows.
+- The *unverified* preprints from 1.3.
+- Whether anyone has applied homeostatic excitability inside transformers
+  during training. None was found so far.
 
 ## Sources
 
@@ -362,3 +624,26 @@ Neuromodulation and homeostatic RL:
 - [Doya 2002 (record)](https://www.scilit.net/publications/f6b38cae76f13a56a4319668784cb813)
 - [Yu & Dayan 2005](https://princetonuniversity.github.io/NEU-PSY-502/_static/pdf/Class%208/Yu2005.pdf)
 - [Keramati & Gutkin 2014](https://elifesciences.org/articles/04811)
+
+Read in full for the second pass:
+- [Basu et al., Mirostat](https://arxiv.org/pdf/2007.14966)
+- [Haarnoja et al., SAC algorithms and applications](https://arxiv.org/pdf/1812.05905)
+- [Plappert et al., parameter space noise](https://arxiv.org/pdf/1706.01905)
+- [Aston-Jones & Cohen 2005](https://pages.ucsd.edu/~jpineda/COGS260/monoamines/LC-NE%20review.pdf)
+
+Also used in the second pass:
+- [Burda et al., large-scale study of curiosity](https://arxiv.org/pdf/1808.04355)
+- [Bellemare et al., count-based exploration](https://arxiv.org/pdf/1606.01868)
+- [Noisy-TV avoidance by aleatoric uncertainty](https://arxiv.org/pdf/2102.04399)
+- [Wilson et al. 2014, directed and random exploration](https://pmc.ncbi.nlm.nih.gov/articles/PMC5635655)
+- [Daw et al. 2006, cortical substrates of exploratory decisions](https://pmc.ncbi.nlm.nih.gov/articles/PMC2635947)
+- [Shenhav, Botvinick & Cohen 2013, expected value of control](https://pmc.ncbi.nlm.nih.gov/articles/PMC3767969)
+- [Roesch, Calu, Esber & Schoenbaum 2010, basolateral amygdala and Pearce-Hall](https://pmc.ncbi.nlm.nih.gov/articles/PMC2838173)
+- [Calu et al. 2010, central amygdala](https://pmc.ncbi.nlm.nih.gov/articles/PMC3033562)
+- [Novelty as a dimension in the affective brain](https://www.sciencedirect.com/science/article/abs/pii/S105381190901026X)
+- [Influence of anxiety on exploration, review](https://pmc.ncbi.nlm.nih.gov/articles/PMC11213056)
+- [Anxiety as uncertainty learning](https://link.springer.com/article/10.3758/s13415-023-01080-w)
+- [Gilzenrat et al. 2010, pupil and adaptive gain](https://link.springer.com/content/pdf/10.3758/CABN.10.2.252.pdf)
+- [Pupil and exploration (Jepma & Nieuwenhuis line)](https://pmc.ncbi.nlm.nih.gov/articles/PMC3403821)
+- [Agrawal, Mattar, Cohen & Daw, opportunity costs of fatigue and boredom](https://www.biorxiv.org/content/10.1101/2020.09.08.287276.full.pdf)
+- [Keramati & Gutkin 2014, homeostatic RL](https://elifesciences.org/articles/04811)

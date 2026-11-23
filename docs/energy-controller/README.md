@@ -4,7 +4,9 @@ A research write-up in paper order. Each part is written when its stage is done.
 
 1. [Introduction and related work](1-introduction.md): what our energy is, who
    has built something like it, and who has built a controller for it. First
-   pass, written 2026-11-23, before any methodology was chosen.
+   and second pass, 2026-11-23: the systems that work between boredom and
+   confusion, compared in detail, and the candidates they imply. Written
+   before any methodology was chosen.
 2. Methodology: not yet.
 3. Results: not yet. Raw results also go in `docs/results/`, as before.
 4. Conclusion: not yet.
