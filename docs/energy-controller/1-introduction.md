@@ -836,7 +836,9 @@ Dwarf Fortress are harder candidates for later.
 - **Keeping the AI in the game.** The machine has no internet and nothing
   else on it, but leaving the game would still be annoying to find and undo.
   - *Already blocked:* `AI_SUPPORTED_KEYS` has no Alt and no Super, so Alt+Tab,
-    Alt+F4 and the Super key are impossible.
+    Alt+F4 and the Super key are impossible. If an in-game command needs Alt,
+    add it, and block only the OS combinations (Alt+Tab, Alt+F4) from being
+    sent (user).
   - *Still possible:* Esc opens the pause menu, then "Save and Quit", then
     "Quit Game" on the title screen.
   - *Options*, from least to most invasive:
@@ -850,6 +852,11 @@ Dwarf Fortress are harder candidates for later.
     3. A watchdog that restarts Minecraft into the same world if its process
        exits.
   - Then let the AI learn to play from whatever it finds there.
+- **Where it runs:** the sandbox, on localhost. The AI runs on the P40 and
+  Minecraft runs on the same machine, which is free for this. Setup needs a
+  short window of internet access: the user signs in to their account,
+  installs Minecraft, the Fabric loader and the mod, and then the machine
+  goes back offline.
 - **Measuring exploration without an oracle:** game-side information may be
   used for *evaluation only*, never as agent input. Minecraft's own
   per-player statistics file (blocks mined, distance travelled and so on)
