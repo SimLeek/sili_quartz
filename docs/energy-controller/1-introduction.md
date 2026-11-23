@@ -1,6 +1,6 @@
 # 1. Introduction and related work (2026-11-23)
 
-**Status:** second pass, written before any methodology was chosen.
+**Status:** third pass, written before any methodology was chosen.
 - **1.1–1.3** (first pass) come from web-search snippets, abstracts, and papers
   already cited in sili (`sili__new/CITATIONS.md`, `energy-params.md`).
 - **1.4–1.8** (second pass) read four papers in full:
@@ -547,6 +547,109 @@ the amygdala literature treats it as a separate system.
   separately, for random vs directed exploration);
 - how often the clean forward pass for d is run.
 
+## 1.10 Third pass: a reward-free objective for actors (user, 2026-11-23)
+
+**The problem with 1.8 for agents.** Candidates 1 and 2 work for prediction,
+where surprise and learning progress come from a target. An actor has no such
+target, and even a critic needs a metric to critique.
+- **Energy or health as the metric is circular:** the controller would be
+  setting the very thing it is judged on.
+- **Health is necessary but not sufficient:** learning rate 0 plus repeated
+  exploration keeps every health statistic fine while learning almost nothing.
+
+So the metric must meet two requirements:
+- energy cannot satisfy it directly;
+- noise plus no learning cannot satisfy it either.
+
+**Predictive information of the agent's own stream** (Ay, Bertschinger, Der,
+Güttler & Olbrich 2008, Eur. Phys. J. B 63:329; Martius, Der & Ay 2013):
+
+    I(past; future) = H(future) − H(future | past)
+
+- **Boredom** makes H(future) small: nothing varies.
+- **Confusion** makes H(future | past) large: nothing is predictable.
+- **It is high only between the two traps**, so it is the information-theoretic
+  form of the shape in 1.4, with no target to hand-set.
+- **Measured behavior:** in a two-wheeled robot, past–future mutual
+  information of the sensors peaked for behavior that was "both explorative
+  and sensitive to the environment".
+- **It is used as a reward-free objective**, and robots trained on it start
+  moving and playing with no external task. That is an answer to "how does
+  something get up with no external stimulus".
+- **Noise does not satisfy it:** noise raises both terms equally. Nor does
+  learning rate 0, because the past only becomes predictive of the future
+  through learning.
+- **Practical caveat:** estimating it in high dimensions is hard. Der's line
+  uses linear/Gaussian approximations of sensor time series.
+- **The user's region-to-region version** is I(region A's past; region B's
+  future). The "external" side is another region. A known precedent, from
+  memory and not re-checked: IMAX (Becker & Hinton 1992) maximizes MI between
+  modules that see different inputs. Different inputs are what stop two
+  regions agreeing trivially.
+
+**Future survivability: empowerment and semantic information.**
+- **Empowerment** (Klyubin, Polani & Nehaniv 2005, 2008) is the channel capacity
+  from actions to future sensor states: how many distinguishable futures the
+  agent can bring about.
+  - It needs no reward, being "fully specified by the dynamics".
+  - Death is zero empowerment.
+  - Greedy empowerment balanced a pendulum from a wide range of starts.
+  - It still prefers controllable states when there is no danger at all.
+- **Semantic information** (Kolchinsky & Wolpert 2018, Interface Focus) is the
+  part of the agent–environment information that is causally necessary for the
+  agent's continued viability. It is measured by scrambling information and
+  watching viability fall.
+
+**The user's criterion as one constrained problem.** "Exploration that helps
+future survivability while keeping current survivability acceptable" has the
+same form as SAC's constrained objective (1.5), with viability as the
+constraint instead of entropy:
+
+    maximize  I_pred (or empowerment)   subject to   viability / health ≥ floor
+
+- **The controller is the dual variable.** It is 0 while health has slack and
+  rises as health nears the floor, pulling exploration back.
+- **As danger goes to 0,** the constraint never binds, the dual stays 0, and
+  what remains is pure information-seeking. That is the limit asked for: it
+  holds in any environment, for a new agent too.
+- **Active inference reaches the same limit:** with prior preferences removed,
+  expected free energy reduces to optimal Bayesian design (information gain).
+- **It is not circular:** health is only the constraint, and the objective
+  involves the environment, so energy cannot raise it directly.
+
+**How the brain keeps going with no external stimulus** (beyond hunger and the
+like):
+- **Tonic dopamine** reports the average reward rate. That rate is the
+  opportunity cost of time, and it sets response vigor (Niv, Daw, Joel & Dayan
+  2007). A later levodopa study ties dopamine to the expected value of effort
+  rather than a pure opportunity cost.
+- **Boredom** as an opportunity-cost signal for exploring (Agrawal, Mattar,
+  Cohen & Daw).
+- **Reward-free form:** with no extrinsic reward, the same machinery works on
+  the *rate of information gain*. When the current rate falls below the
+  running average, the agent is bored: raise the dose or move on. This is
+  adaptive gain's long-vs-short utility (1.6) with information as the utility.
+
+**SuperMimic** (Liao et al., CoRL 2026, arXiv 2610.28480):
+- one differentiable world model (an MLP) for humanoid whole-body control;
+- results self-reported and not checked here.
+- **Its role:** a cerebellum-like forward model.
+- **What it would give:** in this frame, it supplies H(future | past), the
+  predictable part, so predictive information can be estimated from its errors.
+
+**What this changes in 1.8.**
+- **The objective for actors and for the slow tier:** predictive information,
+  or empowerment, maximized under a health constraint. The dual variable is
+  the dose controller.
+- **Candidates 1 and 2** stay as prediction-side controllers and baselines.
+- **Learning progress (candidate 2)** becomes the prediction-side special
+  case: the change in H(future | past).
+- **Open:**
+  - which estimator of I_pred is cheap enough per region;
+  - whether empowerment (which needs action channels) or predictive information
+    (sensors only) fits the first agent;
+  - how the health floor is chosen.
+
 ## 1.9 Search again in a later pass
 
 - Mirostat's appendix: the Zipf estimate, and the alternative token-iteration
@@ -647,3 +750,16 @@ Also used in the second pass:
 - [Pupil and exploration (Jepma & Nieuwenhuis line)](https://pmc.ncbi.nlm.nih.gov/articles/PMC3403821)
 - [Agrawal, Mattar, Cohen & Daw, opportunity costs of fatigue and boredom](https://www.biorxiv.org/content/10.1101/2020.09.08.287276.full.pdf)
 - [Keramati & Gutkin 2014, homeostatic RL](https://elifesciences.org/articles/04811)
+
+Third pass:
+- [Ay et al. 2008, predictive information and explorative behavior](https://centre.santafe.edu/thermocomp/Predictive_information_and_explorative_behavior_of_autonomous_robots)
+- [Martius, Der & Ay 2013, information-driven self-organization](https://arxiv.org/pdf/1301.7473)
+- [Klyubin, Polani & Nehaniv, empowerment](https://uhra.herts.ac.uk/id/eprint/300/1/901933.pdf)
+- [Salge, Glackin & Polani, empowerment introduction](https://arxiv.org/pdf/1310.1863v1)
+- [Kolchinsky & Wolpert 2018, semantic information](https://pmc.ncbi.nlm.nih.gov/articles/PMC6227811)
+- [Semantic information in resource-gathering agents](https://arxiv.org/pdf/2304.03286)
+- [Niv, Daw, Joel & Dayan 2007, tonic dopamine](https://nivlab.princeton.edu/wp-content/uploads/sites/938/2025/10/s00213-006-0502-4.pdf)
+- [Levodopa and the value of effort](https://pmc.ncbi.nlm.nih.gov/articles/PMC6601940)
+- [Friston et al., active inference and epistemic value](https://www.fil.ion.ucl.ac.uk/~karl/Active%20inference%20and%20epistemic%20value.pdf)
+- [Removing preferences reduces EFE to Bayesian design](https://arxiv.org/pdf/2004.08128v5.pdf)
+- [SuperMimic](https://arxiv.org/abs/2610.28480)
