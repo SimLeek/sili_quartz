@@ -52,7 +52,7 @@ ledger, the cost quantified and never hidden.
   one importance value; sili keeps no backprop state; a conventional engine with
   a one-value optimizer would be 2/3). Adam remains the diagnostic reference.
 - **e-BPTT** — torch first pass done (PR #4) → [details](#done-2b-ebptt).
-  Open items are under 7.
+  Open items are under 3b.
 
 1. **Bend proof first.** Prove that weights + optimizer state in fp4 with
    hadamard / additive LoRAs, plus annealing, can train and learn the recurrent
@@ -64,6 +64,12 @@ ledger, the cost quantified and never hidden.
    Deliverable: the comparative model size in fp4 for equal capacity, and any
    other conversion facts that fall out (bits/parameter, rank of the additive
    correction).
+   **Answered, narrowly (sili__new #58, corrected in #59):** stochastically
+   rounded stored fp4 moves to the right average, with a noise floor √(d·e)
+   that lr does not lower. The Hadamard/additive LoRAs and width are what
+   lower it. End-to-end MQAR on that kernel is not proved. There may be no
+   single parameter-count equivalence (precise work vs decision work): measure
+   it per task.
 2. **If the proof can't be done:** port a minimal fp4 hadamard / additive
    kernel to CUDA and train a transformer with it on the P40, then measure.
 3. **If something is off in training:** look for NVIDIA's solution (their fp4
@@ -71,7 +77,29 @@ ledger, the cost quantified and never hidden.
    optimizer state per parameter. (The user had Gemini estimate how many bits
    per parameter each neurochemical is equivalent to.)
 
-## 2c. Sili energy port and model collapse
+## 2c. Sili energy port and model collapse — Done (PR #6)
+Results:
+- [pilot](docs/results/2026-11-22-collapse-pilot.md)
+- [site sweep + 4 seeds](docs/results/2026-11-23-collapse-site-sweep.md)
+- [energy vs loops](docs/results/2026-11-22-energy-vs-loops.md)
+
+Fixed-dose MLP + attention energy holds test perplexity at ~78 over 10
+self-trained generations, against greedy's 2025 and matched noise's 2294; this
+motivates 2d. Differences from the plan below:
+- item 3 ran as the generational loop: the 2060 teacher writes, the P40
+  student trains on it, and the student answers by handing its weights back
+  (not text). Messages were 64 tokens, not 1k–4k.
+- **Not doing: the 1k–4k-token dialogue (user, 2026-11-23), on compute grounds.**
+  - Scaled from the measured sweep, 128 samples × 4k tokens is 32× the tokens:
+    about 2.7 h per energy generation, about 100 h per seed for the 8 core arms,
+    about 17 days for 4 seeds. 2k tokens halves that.
+  - Backprop at about 1 MiB/token/layer needs about 96 GiB per 4k sequence, so
+    the P40 needs checkpointing (about +1/3 training time).
+  - 8 conversations instead of 128 cuts the compute, but gives noisy metrics
+    and slow sequential generation (no flash-linear-attention on the 2060).
+- item 5's dose sweep did not go down to 1e-6 and had no n + k pass rule.
+  Doses run: .001–.1 MLP-only, and the per-site arms.
+
 Model collapse: a language model trained on another LM's samples, chained
 generation after generation, loses rare words first (the tails vanish) and
 eventually repeats forever (Shumailov et al., Nature 2024, "AI models collapse
@@ -81,7 +109,7 @@ even a small dose of neuron energy RL in the model that *generates* the data
 (per-neuron temperature, not token temperature) stops the collapse.
 Not stochastic annealing: that rescues the optimizer state in self-training.
 
-1. **Torch energy.** Port sili's `EnergyDynamics` (sili__new `sili/energy.py`;
+1. **Torch energy: done (PR #6, `sili_quartz/energy.py`, parity-tested).** Port sili's `EnergyDynamics` (sili__new `sili/energy.py`;
    the older torch version is behind it). Mostly a library rename sili → torch.
    The one real difference: sili's `abs` backward has slope 1 at exactly 0
    (`sili/cpu.py` `abs_backward`, so neurons can wake from zero), torch's has 0.
@@ -96,6 +124,10 @@ Not stochastic annealing: that rescues the optimizer state in self-training.
    original as is (slow to re-download). P40: fp32 (no fast bf16/fp16); for
    fp16, keep fp16 in global memory and convert to fp32 in local memory per op.
    Later: A_lora ⊙ hadamard(B_low_bit) + C_lora for the recurrent parts.
+Method and literature:
+[docs/results/2026-11-22-model-collapse-method.md](docs/results/2026-11-22-model-collapse-method.md).
+The generational pilot (`examples/model_collapse.py`) comes before the dialogue.
+
 3. **Two models talking to each other.**
    - 2060: runs a copy for inference with neuron energy accumulating,
      occasionally forcing firing / acting as per-neuron temperature.
@@ -105,13 +137,64 @@ Not stochastic annealing: that rescues the optimizer state in self-training.
      length a fixed limit in 1k–4k tokens.
 4. **Collapse metrics, per round:** rare-token mass (bottom tail of the
    original model's unigram distribution), distinct-n, longest repeated span /
-   repetition rate, perplexity on fixed real held-out text, a structure check
-   (original model's perplexity on the samples).
+   repetition rate, test perplexity (the student's, teacher-forced
+   on fixed real held-out text), and a structure check: the *original* model's
+   perplexity on the *generated* samples, where LOW is not good (loops score
+   10x better than real text; see docs/results/2026-11-22-energy-vs-loops.md).
+   Plus free-running distinct-3: test perplexity always sees real context, so
+   it cannot see the student looping on its own output.
 5. **Arms:** energy off at T = 1 (expected: collapse by round n); temperature
    sweep (expected: tails kept, structure lost); energy dose sweep from tiny
    (1e-6, expected useless) up, to find the line. Pass = no collapse through
    n + k rounds (k a fixed budget) at some dose, structure kept. Seeds = same
    program run N times. Results to `docs/results/`, ledger row.
+
+## 2d. Minimal energy controller (before sleep, user 2026-11-22)
+A fixed energy dose is wrong most of the time: raise it to try new things and
+to learn new things, lower it to focus and get accurate output. Build the
+smallest controller that sets the dose, working before 3 and 4.
+- **Signals measured so far** ([energy vs loops](docs/results/2026-11-22-energy-vs-loops.md)):
+  - repetition / low surprise: energy switches off 2 to 13x more neurons on a
+    loop than on real text, a free "bored" signal → raise the dose;
+  - high surprise / incoherence → lower it;
+  - an external reward present → lower it (energy RL added nothing on
+    dense-reward MQAR);
+  - amortized health: dormant fraction, rank collapse, branching ratio
+    (`BranchingRatioTracker` can already set energy's density per call) →
+    raise it while learning.
+- **First test:** the loop test with a surprise-targeting dose, against fixed
+  doses and against Mirostat (Basu et al., ICLR 2021), which targets surprise
+  through token temperature: the strongest temperature-style baseline.
+- **Then:** the collapse loop (2c) with the controller in place of a fixed cost.
+- **Why a controller, from the collapse sweep (user, 2026-11-23,
+  [site sweep](docs/results/2026-11-23-collapse-site-sweep.md)):**
+  - With no outside data, greedy + MLP/attention energy at a fixed dose holds test
+    perplexity at 75 → 78.5 from g5 to g10 (4/4 seeds), against greedy's 2025
+    and matched noise's 2294. It does this with almost no tuning. The plateau
+    is the signal: energy is useful while awake, especially when outside
+    training data is not available.
+  - Its free-running output stays loopy (distinct-3 0.086). The reading: low
+    complexity is energy's "comfortable" phase before learning. That phase
+    should end *within one training run*, not over generations, and a fixed
+    dose cannot end it. That is what the controller is for.
+  - The training loss falls to 0.008 at a fixed dose, against greedy's 0.074.
+    Energy should keep a noise floor; lowering that floor once the model
+    predicts well enough should let it learn more.
+- **Scope:** a controller for practically all neurons, not just the MLP and
+  attention sites. Open: how much of it is a simple program and how much an
+  AI (learned, e.g. the actor-critic idea).
+- **Where it should matter most:**
+  - RL with very sparse rewards;
+  - stuck training even with next-input prediction. energy_rl was designed to
+    break stable attractors and zero-init deadlocks (all-zero RNN synapses with
+    all flow into one line trained once energy was on).
+- **Test within one run:** the controller should take free distinct-3 up
+  during a run while keeping the plateau, against the fixed dose.
+- **When this lands, check whether 6 (energy for RL task solving) belongs
+  inside it.** Note the two are different "energies": 2c/2d is sili's
+  per-neuron homeostatic energy; the Energy-Based Reasoners paper means a
+  learned scalar over reasoning states, minimized by looping. That scalar may
+  still be a useful signal for the controller (converged → focus).
 
 ## 3. Stochastic annealing + health pass: "sleep"
 - **Sleep window (≤ 8 h/day, once a day) = annealing + health passes that
@@ -125,11 +208,70 @@ Not stochastic annealing: that rescues the optimizer state in self-training.
 - Stochastic selection has won every training-related comparison so far; it
   will change these properties too: include it as an arm, not a footnote.
 
+## 3b. Sparse row selection without starvation (before 4: its 1000-row subset needs good sparse training)
+Formerly 7, random top-k with error feedback. Error feedback (Seide 2014, Stich
+2018) stores a residual of the gradient's size, one value per synapse, which
+breaks the single-state budget (weight + importance, about 1 byte per synapse).
+The open question stays: is there a cheap, correct substitute? See sili__new
+`bend_proofs/noise_selected_credit/README.md` (error feedback section).
+
+**Hypotheses (user, 2026-11-22), not measured:** keep one number per input or
+output neuron, a selection penalty that rises each time the row is picked and
+decays otherwise. Add it to the selection score only, as in DeepSeek-V3's
+auxiliary-loss-free MoE load balancing (a per-expert bias, nudged by load).
+- **H1, coverage:** |G| top-k + penalty stops the stalls. In the e-BPTT sweep
+  every |G|-scored arm had a seed that stalled or collapsed, and noise at
+  p = .25 matched dense (9/11). Starvation of the same rows is the suspected
+  cause, not shown.
+- **H2, unbiased without a buffer:** sample rows with known probability p
+  shaped by |G| and the penalty, and divide each update by p. That is unbiased,
+  with variance as the remaining cost vs error feedback, not bias. The penalty
+  also keeps p from getting tiny, where 1/p blows up.
+- **Known gap vs error feedback:** a skipped row's gradient is dropped, not
+  deferred. Plain top-k + penalty is still biased: each row learns at a rate
+  set by how often it is picked, which the penalty only evens out.
+- **The same mechanism as energy:** it is EnergyDynamics' activation cost applied
+  to *being selected*. The torch port (`sili_quartz/energy.py`) may drive it as is.
+
+**Test:** the e-BPTT credit sweep with two added arms, (1) |G| top-k + penalty
+and (2) penalty-shaped sampling divided by p, against noise p = .25, |G| top-k
+and dense. Measure seeds reaching 0.95, worst seed, steps and wall time. Then
+small MQAR recurrent transformer models.
+- e-BPTT items still open: clean in-window test (episode inside one chunk);
+  more steps / seeds at gap 64; larger d for the wall-time saving; K-side
+  Jacobian.
+
 ## 4. HDD hippocampus
 1. Port sili cpu so that forward can add contribution to one subset of input
    rows while backward adds gradient + optimizer updates to another subset.
 2. fp4 hadamard working in VRAM on an MQAR example.
-3. A million × million recurrent transformer block, backprop through a random
+3. **GPU stand-in first (user, 2026-11-22): show the GPU case is similar to a
+   reasonable HDD case before the slow run.**
+   - **Theory says whether it should learn.** Each step trains n rows (backprop)
+     and activates m rows (forward) out of N. Treat a trained subset as a write
+     and an active subset as a read, and compute the true signal and the random
+     false overlap the block should get:
+     - *Willshaw* (clipped Hebbian, binary): after M stored pairs a synapse is
+       set with p1 = 1 − (1 − (k_in·k_out)/(N_in·N_out))^M. A true target
+       collects all k_in of the cue's inputs; a false one collects
+       Binomial(k_in, p1). Capacity peaks near p1 = 0.5, at about
+       ln 2 · N_in·N_out / (k_in·k_out) pairs.
+     - *Kanerva SDM*: a location is active with probability p. Write and read of
+       the same item share about p·H of H locations; an unrelated write shares
+       about p²·H, the false overlap. The best p for T stored items is about
+       (2·H·T)^(−1/3).
+     - Map n, m, N and the items stored per window onto these models. Then
+       predict signal vs false overlap, and with it learns / doesn't, at GPU size
+       and at HDD size.
+   - **HDD sparsity on the GPU:** a banded matmul, nonzero only within ~y above
+     and ~y below the diagonal, else 0. This mimics the HDD layout, where
+     nearby time rows are chosen together and read sequentially.
+   - **Checks on the GPU block:** does it learn MQAR and ordinary training? Do
+     other transformer blocks end up reading from it? Does the measured signal
+     and false overlap match the prediction? If so, the HDD size is predicted,
+     not guessed.
+   - Needs 3b: training only n rows is sparse selection.
+4. A million × million recurrent transformer block, backprop through a random
    subset of ~1000 rows where the subset is time-related (nearby time entries are
    chosen together, as in e-BPTT's smoothed noise). Backed by the sili database
    in HDD memory. ~1000 rows to keep reads/writes to around page size. both row
@@ -148,18 +290,55 @@ omega window on sili CUDA) and the peridot-style sili Tensor port. So that we ca
 2. Get it running by transferring kernels one by one.
 3. Train it with intrinsic RL: energy, stochastic annealing.
 
+### The fp4 kernel version to port (checked on sili__new acc7916)
+Evidence: `bend_proofs/fp4_trainability` (#58, corrected in #59). Proved =
+one-update unbiasedness and its variance; the rest was measured on the real
+headers or read from the call sites.
+
+- **SIMD trap, read this before vectorizing for CUDA.** Do NOT port
+  `block4_vec_quantize_stochastic_fp4_live` (`block4.hpp`). Despite the name it
+  keeps the value's own sign, so under |v| < 0.5 it is deterministic, biased by
+  up to 0.5, and never crosses zero (0/1000 runs; the scalar: 1000/1000). Only
+  a unit test calls it. Vectorize the two *scalar* functions below, and test
+  E[Q(v)] = v and zero crossing on the GPU.
+- **Weight:** `fp4_quantize_stochastic_live`: unbiased on [-6, 6], saturates
+  outside, rounds across ±0.5 near zero.
+- **Importance is a different quantizer:**
+  `fp4_quantize_stochastic_live_nonneg`. Never reuse the weight's (or its SIMD
+  form) here: the cross-sign rounding makes importance negative and sqrt(ci)
+  NaN. Below 0.5 it deliberately returns 0.5 (a floor, so biased there).
+- **Empty slot:** block4 uses the plain `fp4_quantize_stochastic` pair when
+  weight and importance were both code 0 (`was_live` false), as in
+  `Block4Codec<FP4BiPacked>::encode<true>`.
+- **Update:** `disldo_backward<..., RMSpropScalePolicy, DeferredScaleWrite=false,
+  StochasticRounding=true, BoundedRMSpropSynapsePolicy>`: one batch-aggregated
+  update, then quantize. Defaults of the fp4 binding: beta2 .999, eps 1e-8,
+  max_abs_delta 2, max_ci 100, zero_escape_eps .1, scale_invariant off,
+  max_abs_grad off (1e30: the binding's 8 is never passed for fp4).
+- **Effective weight:** W = Q ⊙ S + A, with the rank-N scale S and the additive
+  A in fp32. Activations and state are fp32.
+- **Nibble order differs, for no recorded reason: use one order in the port.**
+  Scattered `FP4BiPacked` = weight high (3cb16b7, 2026-07-01). Block4 = weight
+  low (8fb1583, a Claude commit, 2026-07-28, no rationale given). Today's
+  conversions all decode and re-encode correctly (read, not tested). Two
+  comments state block4's order backwards or ambiguously: `block4.hpp` (the
+  Block4Tile8 comment) and `delta_csr_types.rst` ("weight|imp<<4").
+- **Not for learning updates:** `fp4_quantize` / `fp4_quantize_live` (nearest).
+  The column-rescale pass in `delta_csr_types.hpp` still writes with
+  `fp4_quantize_live`, so small rescales are lost or biased: check it before
+  porting that pass.
+
 ## 6. Energy for RL task solving
 Get energy working for RL task solving too. Reading: "Energy-Based Reasoners:
-Your Recurrent Reasoner Should Be an Energy-Based Model".
+Your Recurrent Reasoner Should Be an Energy-Based Model" (Chen, Gladstone, Li,
+Ji, Du; arXiv 2611.08977). Its "energy" is a learned scalar over latent
+reasoning states, not sili's neuron energy: see 2d, which may absorb this.
 
-## 7. Random top-k with error feedback
-Implement and test random top-k with error feedback on small MQAR recurrent
-transformer models. See sili__new `bend_proofs/noise_selected_credit/README.md`
-(error feedback section). Open question: does a cheap, correct error feedback
-exist for this setting, or not?
-- e-BPTT items still open: clean in-window test (episode inside one chunk);
-  more steps / seeds at gap 64; larger d for the wall-time saving; K-side
-  Jacobian.
+## Finale: train on new video games
+Test by training on video games the model hasn't seen: actual games, not
+Atari. robonet (general remote-desktop control) or whatever per-game harness is
+simplest for one or more games; GameScaling-0.8B already has keyboard/mouse +
+vision. Choose the harness when we get here.
 
 ## Backlog: integration tests + advancements from other models
 - Omega distractor test (row 20), chunk sweep, MIRAS losses, MLP memory, Muon,
