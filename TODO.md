@@ -196,7 +196,33 @@ small MQAR recurrent transformer models.
 1. Port sili cpu so that forward can add contribution to one subset of input
    rows while backward adds gradient + optimizer updates to another subset.
 2. fp4 hadamard working in VRAM on an MQAR example.
-3. A million × million recurrent transformer block, backprop through a random
+3. **GPU stand-in first (user, 2026-11-22): show the GPU case is similar to a
+   reasonable HDD case before the slow run.**
+   - **Theory says whether it should learn.** Each step trains n rows (backprop)
+     and activates m rows (forward) out of N. Treat a trained subset as a write
+     and an active subset as a read, and compute the true signal and the random
+     false overlap the block should get:
+     - *Willshaw* (clipped Hebbian, binary): after M stored pairs a synapse is
+       set with p1 = 1 − (1 − (k_in·k_out)/(N_in·N_out))^M. A true target
+       collects all k_in of the cue's inputs; a false one collects
+       Binomial(k_in, p1). Capacity peaks near p1 = 0.5, at about
+       ln 2 · N_in·N_out / (k_in·k_out) pairs.
+     - *Kanerva SDM*: a location is active with probability p. Write and read of
+       the same item share about p·H of H locations; an unrelated write shares
+       about p²·H, the false overlap. The best p for T stored items is about
+       (2·H·T)^(−1/3).
+     - Map n, m, N and the items stored per window onto these models. Then
+       predict signal vs false overlap, and with it learns / doesn't, at GPU size
+       and at HDD size.
+   - **HDD sparsity on the GPU:** a banded matmul, nonzero only within ~y above
+     and ~y below the diagonal, else 0. This mimics the HDD layout, where
+     nearby time rows are chosen together and read sequentially.
+   - **Checks on the GPU block:** does it learn MQAR and ordinary training? Do
+     other transformer blocks end up reading from it? Does the measured signal
+     and false overlap match the prediction? If so, the HDD size is predicted,
+     not guessed.
+   - Needs 3b: training only n rows is sparse selection.
+4. A million × million recurrent transformer block, backprop through a random
    subset of ~1000 rows where the subset is time-related (nearby time entries are
    chosen together, as in e-BPTT's smoothed noise). Backed by the sili database
    in HDD memory. ~1000 rows to keep reads/writes to around page size. both row
