@@ -756,6 +756,34 @@ part picks among them.
   - Floor: keep ≥ PR per layer.
 - **Criticality:** the branching ratio stays in sili's target band [0.97, 0.99]
   (`sili__new/docs/research/energy.rst`).
+- **Optimizer state** (RMSprop importance `ci`, sili's second moment; MQAR
+  v13–v18 runs, `JOURNAL.md` 2026-10, `toy_tile_recurrence_rmt.py`).
+  - *Graduated runs* keep each layer's average `ci` low, with medians 0.1–1.5.
+  - *Every stalled run* climbs toward `max_ci = 100` in v_proj, o_proj and
+    input_proj, and never recovers within 100k steps (5 of 5 checked).
+  - *StableRegion targets* (mean, std) from graduated runs: q_proj (0.09,
+    0.18), k_proj (0.10, 0.13), v_proj (0.40, 0.35), input_proj (1.05, 1.47),
+    o_proj (0.20, 0.67), lm_head (0.09, 0.03).
+  - *Weight std targets:* 0.059 for q, k, v and o, and 0.16 for input_proj
+    and lm_head, mean 0.
+  - *Both are needed:* holding `ci` alone let v18b's v_proj weight norm run
+    away from 17 to 360 (2 of 3 StableRegion runs graduated before
+    WeightRenorm was added).
+  - *For Adam* (GameScaling): `ci` corresponds to Adam's second moment v.
+    Adam's first moment has no sili counterpart. The absolute targets depend
+    on the model and the gradient scale, so for another model use them as a
+    *ratio to its own early-training values*, with the MQAR numbers as the
+    measured shape: a low, stable mean, and runaway toward the cap as the
+    failure.
+
+**Model architecture: GameScaling's own architecture first (user).** We
+already have it: Qwen3.5-0.8B hybrid, fine-tuned on games, keyboard/mouse plus
+vision. So far only its text config has been loaded; the vision path has not
+been run yet. Starting from a trained model answers four questions:
+- can a new init approach or match the trained model?
+- does the method avoid degrading a trained model?
+- can it improve a trained model?
+- can the actor take its information from the trained predictor?
 
 **Model architecture: needs more research before it is fixed.**
 - **Standard approach first.** The actor takes information from the predictor
@@ -775,14 +803,40 @@ part picks among them.
 - A dose per *neuron* may be too expensive. Set the controller's granularity
   from how much GPU is left: a budgeted ratio of controlled units to GPU.
 
-**Reward-free environment: a long video game.** A long game lets us measure
-exploration itself, and there is a lot of existing work on getting AIs to
-explore games.
-- Candidates to look into: Crafter, NetHack/MiniHack, Minecraft (MineDojo),
-  Super Mario Bros (Burda et al. played it with no reward), and VizDoom (used
-  by Pathak et al.).
-- Atari is out, per the finale note.
-- Choose with the methodology.
+**Reward-free environment: Minecraft, through robonet (user).** Rimworld and
+Dwarf Fortress are harder candidates for later.
+- **What the field uses:**
+  - *VPT* (OpenAI 2022): screen pixels and the native keyboard/mouse interface
+    at 20 Hz. The recorded frames are 640 × 360. The model's input
+    resolution (often quoted as 128 × 128) was not confirmed from the primary
+    source.
+  - *MineRL v1.0* (Minecraft 1.16.5): agents see "solely egocentric RGB".
+  - *MineStudio* (CraftJarvis, 2024–2025): built on MineRL, with the MCU
+    benchmark.
+  - *Dreamer 4* (Hafner et al., 2025): diamonds from offline data alone, with
+    100× less data than VPT. It uses 256 spatial tokens and 192 frames of
+    context.
+- **Block-information APIs** (Mineflayer-based agents such as Voyager) are
+  the interface the user does not want.
+- **MineRL's maintenance status** was not confirmed.
+- **Colony games:** RimWorld has one LLM benchmark repo (RLE, API-based).
+  Dwarf Fortress has none found.
+- **Our setup:** vanilla Minecraft, with the AI given only the screen and
+  keyboard/mouse through robonet (`SimLeek/robot_network`).
+  - Robonet already gives the AI a viewport of about 800 × 600 that it
+    zooms and pans itself (tokens 6–12, ×1.1 per zoom, 5% per pan), with
+    canvas-relative mouse coordinates.
+  - It also has key press/release over `AI_SUPPORTED_KEYS` and mouse
+    buttons.
+  - The AI bridge is shared memory (`robonet/bridge`).
+- **A gap to fix:** the AI's mouse move is *absolute* (`moveTo` to a canvas
+  position). Minecraft's first-person camera reads *relative* motion, so a
+  relative-move action is likely needed.
+- **Measuring exploration without an oracle:** game-side information may be
+  used for *evaluation only*, never as agent input. Minecraft's own
+  per-player statistics file (blocks mined, distance travelled and so on)
+  may be enough without a mod. Otherwise, a small mod that logs position and
+  chunks visited.
 
 ## 1.9 Search again in a later pass
 
