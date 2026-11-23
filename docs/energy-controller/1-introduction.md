@@ -829,9 +829,9 @@ Dwarf Fortress are harder candidates for later.
   - It also has key press/release over `AI_SUPPORTED_KEYS` and mouse
     buttons.
   - The AI bridge is shared memory (`robonet/bridge`).
-- **A gap to fix:** the AI's mouse move is *absolute* (`moveTo` to a canvas
-  position). Minecraft's first-person camera reads *relative* motion, so a
-  relative-move action is likely needed.
+- **Mouse:** the AI's mouse move is absolute (`moveTo` to a canvas position).
+  The user confirms that works for Minecraft's camera as is, so no
+  relative-move action is needed.
 - **Measuring exploration without an oracle:** game-side information may be
   used for *evaluation only*, never as agent input. Minecraft's own
   per-player statistics file (blocks mined, distance travelled and so on)
