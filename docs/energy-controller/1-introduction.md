@@ -719,16 +719,70 @@ The tests, in order:
 **A first environment:** a small one with no reward. The finale's real games
 come later.
 
-### Open choices before the methodology part
+### Choices made, and what is left to look into (user, 2026-11-23)
 
-- **The MI estimator.** Der's linear/Gaussian version is cheapest; a contrastive
-  bound (InfoNCE-style) is the alternative. Both are prediction-error based, so
-  neither needs an oracle.
-- **The health floor.** A fixed setpoint, or a level from the agent's own
-  history? A fixed one is a hand-set constant, so it should be stated as such.
-- **Whether the predictor (track P) and the actor (track A) share a network.**
-  The user's expectation: the actor may work best as a separate model.
-- **Per region or global dose** for every model.
+**MI estimator: measured.** The rule is to keep only estimators about as fast
+as a small neural network, and to research others if none pass.
+[Bench results](../results/2026-11-23-mi-estimator-bench.md) (P40, N = 1024).
+- **gaussian_bc is the primary estimator.**
+  - It is the Gaussian MI with the exact Wishart bias removed.
+  - Cost: 0.7–3.7 ms for d = 16–256, no training.
+  - It is unbiased on linear-Gaussian data at every d. Uncorrected, it was off
+    by up to 43 nats at d = 256.
+  - It reads 55–60% of the true MI on a nonlinear (cubic) relation.
+- **InfoNCE is the nonlinear arm at d ≤ 64.**
+  - Cost: about 2× a small-network step, trained alongside the model.
+  - It beat gaussian_bc on the cubic data at d ≤ 64, but was undertrained at
+    d = 256 and is capped at log N.
+- **Dropped:**
+  - KSG: about 45× a network step, O(N²), and it collapsed toward 0 in high d;
+  - MINE: the same cost as InfoNCE, and worse.
+- **Next arm, untested:** Gaussian MI on a *nonlinear* forward model's
+  residuals, i.e. track A's forward model used as the predictor.
+
+**Health floor: from the MQAR research in sili_peridot** (`JOURNAL.md`).
+These are mostly fixed constants, each with a measured basis; the methodology
+part picks among them.
+- **Rank.** v24's lm_head participation ratio fell from a healthy 33.45
+  (column |cos| 0.13) to 6.4 (|cos| 0.84) as it collapsed. Energy-forced
+  firing with WeightRenorm restored it to 27–29.
+  - *Candidate floor:* PR ≥ about 0.8 × the layer's early-training PR. That
+    sits between the collapsed 0.19× and the restored 0.81–0.87×.
+  - It is a proposal derived from those numbers, not a measured threshold.
+- **Sparsity** (2026-11-12 entry).
+  - The kept fraction must stay at or above the gradient's participation ratio.
+  - The r_target that keeps every live direction, R(v, PR), is 0.79–0.84,
+    against the measured cliff at r_target 0.5–0.6.
+  - Floor: keep ≥ PR per layer.
+- **Criticality:** the branching ratio stays in sili's target band [0.97, 0.99]
+  (`sili__new/docs/research/energy.rst`).
+
+**Model architecture: needs more research before it is fixed.**
+- **Standard approach first.** The actor takes information from the predictor
+  rather than being the predictor. That is the world-model-plus-actor pattern;
+  look at Dreamer and Plan2Explore (reward-free exploration in a world model)
+  next.
+- **Variant:** one transformer whose RoPE spatial regions split the roles. Some
+  outputs must be actions, others predictions, with each region trained for
+  its own output.
+- **Later, not now:** output actions only, take signals only, and rely on
+  energy to keep the network complex enough to predict internally.
+
+**Dose granularity.**
+- Per region or global, whichever the model calls for.
+- Where a model allows per region, per region is preferred, since it generally
+  works better than global.
+- A dose per *neuron* may be too expensive. Set the controller's granularity
+  from how much GPU is left: a budgeted ratio of controlled units to GPU.
+
+**Reward-free environment: a long video game.** A long game lets us measure
+exploration itself, and there is a lot of existing work on getting AIs to
+explore games.
+- Candidates to look into: Crafter, NetHack/MiniHack, Minecraft (MineDojo),
+  Super Mario Bros (Burda et al. played it with no reward), and VizDoom (used
+  by Pathak et al.).
+- Atari is out, per the finale note.
+- Choose with the methodology.
 
 ## 1.9 Search again in a later pass
 
