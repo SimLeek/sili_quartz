@@ -150,6 +150,8 @@ The generational pilot (`examples/model_collapse.py`) comes before the dialogue.
    program run N times. Results to `docs/results/`, ledger row.
 
 ## 2d. Minimal energy controller (before sleep, user 2026-11-22)
+Write-up in paper order: [docs/energy-controller/](docs/energy-controller/README.md).
+Part 1, introduction and related work, is a first pass (2026-11-23).
 A fixed energy dose is wrong most of the time: raise it to try new things and
 to learn new things, lower it to focus and get accurate output. Build the
 smallest controller that sets the dose, working before 3 and 4.
