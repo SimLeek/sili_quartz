@@ -4,9 +4,16 @@ Follow-up to a smoke run of the collapse pilot (2 generations, 16 samples).
 CPU diagnostics on GameScaling-0.8B: one repeated phrase, two real-text
 segments, one run each. Diagnostic, not a verdict.
 
-## Perplexity rewards repetition
+## Scoring generated text by perplexity rewards repetition
 
-Original model's perplexity on the samples, all-layer smoke run:
+Two different perplexities, and this section is about the second:
+- **test perplexity** (every results table): the student's perplexity on fixed
+  real test text, teacher-forced. Training on loops makes it *worse*.
+- **original_on_samples** (a structure check): the unmodified model's
+  perplexity on the *generated* samples. Loops are easy to predict, so they
+  score *low*.
+
+Original model's perplexity on the generated samples, all-layer smoke run:
 
 | samples | generation | perplexity | share looping |
 |---|---|---|---|
