@@ -273,17 +273,59 @@ game for each model call.
 - Training updates can run asynchronously from acting, on a replay of the
   last stretch of play.
 
-## 2.5 Order
+## 2.5 Step-by-step order
 
-1. Build the shared meters (2.2).
-2. P-1, then P-2 (prediction side, fast feedback, existing harnesses).
-3. In parallel, the user does the Minecraft setup window; then A-0.
-4. A-1.
-5. A-2.
+**Owners:** *me* means Claude, running on the sandbox. *user* means a step only
+the user can do (account, internet window, review).
+
+**Two lanes:**
+- Track P (steps P.1–P.7) and the Minecraft setup (A.1–A.8) do not depend on
+  each other, so they run side by side.
+- Training in track A (A.9 onward) needs A.8.
+
+**Durations** are estimates from the 2c timings. Each results step writes a
+`docs/results/` file and links it from this PR.
+
+### Track P: text prediction
+
+| Step | Owner | What | Done when |
+|---|---|---|---|
+| P.1 | me | **Effect meter**: KL(p_energy ‖ p_clean) on a sampled subset of steps, with a clean pass sharing the same cache | unit tests: KL is 0 with energy off; rises with cost; time per call logged |
+| P.2 | me | **Surprise meter** (running −log p of own output) and **learning-progress meter** (short- and long-window drop in loss) | unit tests on synthetic streams |
+| P.3 | me | **Controllers**: P1, P1a, P1b, P2, P2a, P2+A, and the ×R/D variants, each a small class that reads the meters and sets energy's cost, noise and drive | unit tests: two-sided (moves up when bored, down when confused), bounded, no NaN; P2 re-melts when learning progress goes flat |
+| P.4 | me | **Mirostat baseline** (P0b), from the paper's algorithm 1 | test: observed surprise tracks τ on GameScaling's text head |
+| P.5 | me | **Loop-test harness**: promote `loop_vs_temperature.py` into `examples/` with all P-1 arms | smoke run of every arm |
+| P.6 | me | **Run P-1** (about 2–4 h; one run per arm) | results doc |
+| P.7 | me | **Collapse loop**: wire the controllers into `model_collapse.py`; add free-running samples *during* each generation's training; then run P-2 (5 arms × 4 seeds × 10 generations, about 15–20 h) | 1-generation smoke, then the results doc |
+
+### Track A: Minecraft setup
+
+| Step | Owner | What | Done when |
+|---|---|---|---|
+| A.1 | user | Find the Minecraft version the no-quit mod (Trolledin) supports | version recorded here |
+| A.2 | user | **Internet window on the sandbox**: install the Java version that Minecraft version needs, the launcher, and sign in; install the Fabric loader, Fabric API and the no-quit mod; create the world (survival, fixed seed); then go offline | the game reaches the world with the mod loaded |
+| A.3 | me | **Offline check**: the game starts and loads the world with the network off | a launch with no network |
+| A.4 | me | **robonet on localhost**: install it into the sandbox venv (wheels from the laptop, no internet); run the desktop endpoint and the AI bridge headless; frames reach a test client and test keys/mouse reach the game | a scripted test walks forward and turns the camera; viewport size recorded |
+| A.5 | me | **Containment**: block OS combinations (Alt+Tab, Alt+F4, Super), Esc, F3 and F11 at robonet; add a watchdog that relaunches into the world if the game exits | each blocked key sent, and nothing happens; killing the game brings it back |
+| A.6 | me | **Evaluation telemetry**: read the world's per-player statistics file on a timer (evaluation only; never reaches the agent) | stats change while the test client walks; if chunks visited is missing, A.6b: the user installs a logger mod in a second window |
+| A.7 | me | **GameScaling as an actor**: load the full `Qwen3_5ForConditionalGeneration` (vision) on the P40; add GameScaling's prompt template and action parser (`THUSI-Lab/GameScaling`, Apache 2.0, fetched on the laptop and copied over); map the action text to robonet events | it plays through robonet; **inference latency per call** measured against the 200 ms budget |
+| A.8 | me | **A-0 baselines**: one 2 h session of untouched GameScaling, one of a random policy | the reference statistics and the compression thresholds (stuck and noise ends) recorded |
+
+### Track A: training and runs
+
+| Step | Owner | What | Done when |
+|---|---|---|---|
+| A.9 | me | **Training infrastructure**: e-BPTT chunks (or checkpointing) through the Qwen3.5 linear-attention layers; asynchronous updates on a replay of recent play; chunked loss; pipeline only if needed (2.4a) | one update fits in memory without stalling the game loop; health stats logged |
+| A.10 | me | **Objective parts**: gaussian_bc and InfoNCE on `layers[12]` projected to d ≤ 64 and on the action stream; the health floor; the dual update for λ | unit tests; the estimate rises on a scripted varied-but-predictable stream and falls on a looped one and on noise |
+| A.11 | me | **Arms**: A1, A1−act, A1+self, A1−λ, A2, A3 and A1+bored, plus the baselines (untouched, fixed dose, no energy, random) | a 10-minute smoke run of each |
+| A.12 | me | **Staged runs**: screen (11 × 2 h, about 22 h), repeat the survivors, repeat again, then 3 seeds of what is left | a results doc for each stage |
+| A.13 | me | **Part 3** (results) collects the result docs; **part 4** (conclusion) | written for review |
+| A-2 | later | sili's learned prefrontal regulator (L) on top of the surviving arms | after A.13 |
 
 ## 2.6 Still open
 
-- The compression-ratio thresholds, from A-0's normal play and from a random
-  policy.
-- The exact Minecraft version: whichever the no-quit mod supports.
-- Whether training fits on the P40 alone, and the inference latency (A-0).
+- The compression-ratio thresholds (A.8), from A-0's normal play and from a
+  random policy.
+- The exact Minecraft version: whichever the no-quit mod supports (A.1).
+- Whether training fits on the P40 alone (A.9), and the inference latency
+  (A.7).
