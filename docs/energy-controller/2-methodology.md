@@ -14,9 +14,10 @@ why.
     **evaluation only** and is never fed to the agent.
 - **Measured two ways.** Every arm reports its gain *and* its cost: wall time,
   GPU memory, and any extra forward passes.
-- **Seeds.** Each seed is the same program run again, at least 4 per arm for
-  any comparison that is claimed. A lead needs an agreeing sign across seeds
-  and a better worst seed.
+- **Seeds.** Each seed is the same program run again. Track P uses at least 4
+  seeds per arm for any claimed comparison. Track A uses the staged protocol
+  in 2.4 (screen, repeat, repeat, then 3 seeds), because there is one P40. A
+  lead needs an agreeing sign across seeds and a better worst seed.
 - **Raw results first.** Each run's tables go to `docs/results/` with no
   verdict. Part 3 collects them, and part 4 draws conclusions.
 - **Runs.** Sandbox only, under gpu_guard (80 °C abort), launched detached,
@@ -81,24 +82,17 @@ itself, and acts only through keys and the mouse.
 - **Evaluation only:** Minecraft's per-player statistics file (distance,
   blocks mined, items), plus chunks visited if a mod is needed. None of it
   reaches the agent.
-- **Minecraft version: set by the mods we need (user).** There are two
-  routes:
-  - **MineStudio 1.1.6.** This is what GameScaling's own Minecraft evaluation
-    uses (OpenHA).
-    - Minecraft 1.16.5 through MCP-Reborn, JDK 8, rendered headless on the
-      CPU (xvfb).
-    - Screen pixels and keyboard/mouse only, with no block information, so
-      the agent gets no oracle input either way.
-    - It reproduces the model's published setting. Use it in A-0 to check
-      that we load and drive GameScaling correctly.
-  - **Vanilla Minecraft, Fabric and robonet,** at whatever version the
-    no-quit mod supports (Trolledin targets recent releases). This is the
-    main A-1 environment.
-    - *Setup (user, a short internet window):* sign in, install Minecraft,
-      the Fabric loader and the mod.
-    - *Mods needed:* the no-quit mod. Add a position/chunk logger only if the
-      vanilla statistics file is not enough for evaluation.
-- **Session length:** 1–4 hours (user).
+- **Environment, decided (user): vanilla Minecraft, Fabric and robonet.**
+  - The version is the one the no-quit mod supports; the user is checking
+    which.
+  - *Setup (user, a short internet window):* sign in, install Minecraft, the
+    Fabric loader and the mod.
+  - *Mods needed:* the no-quit mod. Add a position/chunk logger only if the
+    vanilla statistics file is not enough for evaluation.
+  - MineStudio 1.1.6 (Minecraft 1.16.5) is GameScaling's own published
+    evaluation route. It is not used here, but remains the reference for
+    the model's published numbers.
+- **Session length:** 2 hours (user).
 - **Stuck or collapsed: the compression check (user).**
   - Every 1–10 minutes, compress the agent's own action stream (the action
     text, or the quantized actions, with zlib or a compressed npz). Record the
@@ -120,8 +114,12 @@ itself, and acts only through keys and the mouse.
     separate arm.
 
 **Architecture: two, in this order (user).**
-1. **GameScaling as it is.** It is an actor only, with no frame predictor
-   (model card, GameScaling-0.8B-S3).
+1. **GameScaling as it is,** kept as one whole model (model card,
+   GameScaling-0.8B-S3).
+   - It has no separate predictor *output*. But it is partly recurrent (3
+     linear-attention layers to every full-attention layer), so it predicts
+     internally: an internal world model, much closer to a brain (user).
+   - Actor training on the whole model trains that internal predictor too.
    - *Base:* Qwen3.5-0.8B with a 12-layer vision encoder (patch 16).
    - *Training:* continued pre-training on 1,600 h of keyboard-and-mouse play,
      27% of it Minecraft.
@@ -136,17 +134,22 @@ itself, and acts only through keys and the mouse.
    exploration variant.
 
 **Where MI is measured: two arms (user).**
-- *Central:* a middle layer's hidden state, projected to d ≤ 64.
+- *Central:* the output of transformer block `n_layers // 2`. For
+  GameScaling's 24 layers that is `model.layers[12]`, a linear-attention
+  block. It is projected to d ≤ 64.
 - *Output:* the prediction or action output, i.e. GameScaling's action-chunk
   stream.
 
 **Experiment A-0, setup checks** (no training).
-- GameScaling's vision path loads and runs on the P40.
-- robonet frames reach it; its actions reach the game.
+- GameScaling's vision path loads and runs on the P40, in the full
+  `Qwen3_5ForConditionalGeneration`, not the text-only model used in 2c.
+- robonet frames reach it on localhost, and its action text is parsed into
+  robonet key and mouse events that reach the game.
 - The untouched model's behavior is recorded as the reference for "does not
   degrade".
 
-**Experiment A-1, reward-free exploration** (long sessions; 4 seeds per arm).
+**Experiment A-1, reward-free exploration** (2 h sessions, one at a time on
+the single P40; staged, below).
 - **Arms:**
   - A1 (predictive information under the health floor; λ is the dose);
   - the ablations A1−act, A1+self and A1−λ;
@@ -165,13 +168,28 @@ itself, and acts only through keys and the mouse.
   1. Does training degrade the untouched model's play?
   2. Does it improve it?
   3. Can a new init approach it?
-  4. GameScaling is only an actor (user): it has no frame predictor. The
-     prediction half (H(future | past) for A1, and the world model) has to
-     be added. Architecture 2's world model is one option; a small forward
-     head on GameScaling's hidden state is the cheaper one. The MI estimators
-     do not need it, since they bring their own predictor (least squares or
-     a critic). So the question becomes: does adding a predictor help the
-     actor?
+  4. Does whole-model actor training also improve its internal prediction?
+     Check by probing the centre-block state for the next frame's features,
+     before and after training, as an evaluation only. The Dreamer/
+     Plan2Explore models stay separate (architecture 2).
+
+**Staged protocol (user): one P40, so runs go one at a time.**
+1. **Screen.** One 2 h session per arm and baseline. That is 11 sessions,
+   about 22 h. Any arm that shows one of the following is ruled out:
+   - collapse: the compression check trips and does not recover within the
+     session;
+   - a persistent health-floor violation;
+   - NaN or divergence;
+   - the game exits, or containment breaks.
+2. **Repeat.** Rerun the survivors once, and rule out on the same criteria.
+3. **Repeat again.** The same.
+4. **Three seeds.** Train the remaining arms on three seeds while measuring
+   performance with the evaluation-only statistics.
+
+The elimination criteria above are fixed now. The compression thresholds come
+from A-0 (normal play and a random policy). This replaces the general
+"4 seeds per arm" rule for track A: survival is decided per run, and the
+performance claims use the final three seeds.
 
 **Experiment A-2, later:** sili's learned prefrontal regulator (L) setting
 per-region targets, trained on the same objective.
@@ -186,9 +204,6 @@ per-region targets, trained on the same objective.
 
 ## 2.6 Still open
 
-- The I_pred feature projection for the central arm: which middle layer, and
-  how it is projected to d ≤ 64.
-- The compression-ratio thresholds, set from the untouched GameScaling's own
-  A-0 sessions (normal play) and from a random policy (the noise end).
-- The exact Minecraft version, after checking the no-quit mod's supported
-  versions.
+- The compression-ratio thresholds, from A-0's normal play and from a random
+  policy.
+- The exact Minecraft version: whichever the no-quit mod supports.
