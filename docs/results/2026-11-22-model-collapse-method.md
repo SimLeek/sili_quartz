@@ -80,3 +80,20 @@ building up against a loop. The running pilot is left as configured.
   graded effect that accumulates with tokens seen (perplexity against energy
   off, at 256 / 768 tokens): .01 gives 1.10 / 1.22, .1 gives 1.25 / 1.32,
   1.0 gives 1.53 / 1.56, with 0.1 to 3 % of activations changed.
+
+## Seeds, fixed before the site sweep's results
+
+The site sweep (`sites_4fe5180`, 18 arms) runs seed 0. Seeds 1–3 then rerun the
+core comparison, chosen before any sweep result was seen:
+
+- **Arms:**
+  - real_control, real_mlp0.03_attn0.01;
+  - greedy, greedy_mlp0.03_attn0.01, greedy_noise_0.35, greedy_penalty_1.5;
+  - t0.9, t0.9_mlp0.03_attn0.01.
+- **Why these:** MLP + attention at decay = drive/40 is the configuration that broke 3/3 test loops into readable text. Noise is its damage-matched control, and penalty and temperature are the standard fixes.
+- **What a seed varies:**
+  - the training order;
+  - the teacher's sampling;
+  - the energy and noise generators.
+- **What stays fixed:** the real prompts and the test text.
+- **Order:** one seed runs over all eight arms before the next seed starts, so a run cut off early stays balanced.
