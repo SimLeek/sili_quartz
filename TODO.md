@@ -77,7 +77,7 @@ ledger, the cost quantified and never hidden.
    optimizer state per parameter. (The user had Gemini estimate how many bits
    per parameter each neurochemical is equivalent to.)
 
-## 2c. Sili energy port and model collapse — Done (PR #6) except the dialogue
+## 2c. Sili energy port and model collapse — Done (PR #6)
 Results:
 - [pilot](docs/results/2026-11-22-collapse-pilot.md)
 - [site sweep + 4 seeds](docs/results/2026-11-23-collapse-site-sweep.md)
@@ -85,10 +85,12 @@ Results:
 
 Fixed-dose MLP + attention energy holds test perplexity at ~78 over 10
 self-trained generations, against greedy's 2025 and matched noise's 2294; this
-motivates 2d. Not run as written:
-- item 3, the two-model dialogue (the generational loop was run instead);
-- item 5's dose sweep down to 1e-6 and its n + k pass rule (doses run:
-  .001–.1 MLP-only and the per-site arms).
+motivates 2d. Differences from the plan below:
+- item 3 ran as the generational loop: the 2060 teacher writes, the P40
+  student trains on it, and the student answers by handing its weights back
+  (not text). Messages were 64 tokens, not 1k–4k.
+- item 5's dose sweep did not go down to 1e-6 and had no n + k pass rule.
+  Doses run: .001–.1 MLP-only, and the per-site arms.
 
 Model collapse: a language model trained on another LM's samples, chained
 generation after generation, loses rare words first (the tails vanish) and
