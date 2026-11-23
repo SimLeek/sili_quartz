@@ -81,17 +81,64 @@ itself, and acts only through keys and the mouse.
 - **Evaluation only:** Minecraft's per-player statistics file (distance,
   blocks mined, items), plus chunks visited if a mod is needed. None of it
   reaches the agent.
-- **Setup (user, needs a short internet window):** sign in, install
-  Minecraft, the Fabric loader and the mod, and pick the Minecraft version
-  the mod supports.
+- **Minecraft version: set by the mods we need (user).** There are two
+  routes:
+  - **MineStudio 1.1.6.** This is what GameScaling's own Minecraft evaluation
+    uses (OpenHA).
+    - Minecraft 1.16.5 through MCP-Reborn, JDK 8, rendered headless on the
+      CPU (xvfb).
+    - Screen pixels and keyboard/mouse only, with no block information, so
+      the agent gets no oracle input either way.
+    - It reproduces the model's published setting. Use it in A-0 to check
+      that we load and drive GameScaling correctly.
+  - **Vanilla Minecraft, Fabric and robonet,** at whatever version the
+    no-quit mod supports (Trolledin targets recent releases). This is the
+    main A-1 environment.
+    - *Setup (user, a short internet window):* sign in, install Minecraft,
+      the Fabric loader and the mod.
+    - *Mods needed:* the no-quit mod. Add a position/chunk logger only if the
+      vanilla statistics file is not enough for evaluation.
+- **Session length:** 1–4 hours (user).
+- **Stuck or collapsed: the compression check (user).**
+  - Every 1–10 minutes, compress the agent's own action stream (the action
+    text, or the quantized actions, with zlib or a compressed npz). Record the
+    compression ratio.
+  - *Very compressible* means the agent is repeating itself: stuck, looped or
+    collapsed.
+  - *Barely compressible* means it is close to random noise.
+  - Both ends trigger a check of the model. It is the same two-sided shape as
+    boredom and confusion.
+  - Run the same check on the screen frames, to catch the agent being
+    physically stuck while its actions still vary.
+  - *Proof of a permanent loop* is possible only in a narrow case: a
+    deterministic agent and a deterministic game that revisit an exact
+    (observation, internal state) pair will loop forever. With noise or
+    energy it cannot be proven, so the window rule plus "no new statistics
+    for the window" is the practical test.
+  - It is a monitor and a check trigger, not a controller input. Using it as
+    an input would be allowed (it is the agent's own data), but it would be a
+    separate arm.
 
-**Architecture:**
-- **First:** GameScaling's own (Qwen3.5-0.8B hybrid, vision plus
-  keyboard/mouse), used as the trained predictor. The actor takes its
-  information from it.
-- **Still open:** whether the actor is a separate small head or network, or
-  a role region inside the same transformer. The standard approach goes
-  first; the Dreamer/Plan2Explore reading decides the exact form.
+**Architecture: two, in this order (user).**
+1. **GameScaling as it is.** It is an actor only, with no frame predictor
+   (model card, GameScaling-0.8B-S3).
+   - *Base:* Qwen3.5-0.8B with a 12-layer vision encoder (patch 16).
+   - *Training:* continued pre-training on 1,600 h of keyboard-and-mouse play,
+     27% of it Minecraft.
+   - *Each call:* the current frame plus a short history of frames and
+     actions goes in, and the next **200 ms** of actions comes out as text
+     between `<|action_start|>` and `<|action_end|>`. That is 6 key steps of
+     33 ms, plus one mouse move and scroll for the chunk. The model may think
+     before acting.
+   - *Energy:* goes on its own layers. The objective's dual sets the dose.
+2. **Dreamer/Plan2Explore style:** a world model, with an actor trained inside
+   it on the reward-free objective. Plan2Explore is the reward-free
+   exploration variant.
+
+**Where MI is measured: two arms (user).**
+- *Central:* a middle layer's hidden state, projected to d ≤ 64.
+- *Output:* the prediction or action output, i.e. GameScaling's action-chunk
+  stream.
 
 **Experiment A-0, setup checks** (no training).
 - GameScaling's vision path loads and runs on the P40.
@@ -110,14 +157,21 @@ itself, and acts only through keys and the mouse.
   random policy.
 - **Measures (evaluation only):** distance travelled, unique blocks and items
   seen and obtained, chunks visited, time alive, and how long it takes to
-  get stuck (no new stats for N minutes).
+  get stuck (the compression check above, plus no new statistics for the
+  window).
 - **Measures (internal):** the I_pred estimate, health stats, the dose and λ
   trajectories, and wall time per step.
 - **The four GameScaling questions:**
   1. Does training degrade the untouched model's play?
   2. Does it improve it?
   3. Can a new init approach it?
-  4. Does the actor use the predictor?
+  4. GameScaling is only an actor (user): it has no frame predictor. The
+     prediction half (H(future | past) for A1, and the world model) has to
+     be added. Architecture 2's world model is one option; a small forward
+     head on GameScaling's hidden state is the cheaper one. The MI estimators
+     do not need it, since they bring their own predictor (least squares or
+     a critic). So the question becomes: does adding a predictor help the
+     actor?
 
 **Experiment A-2, later:** sili's learned prefrontal regulator (L) setting
 per-region targets, trained on the same objective.
@@ -132,8 +186,9 @@ per-region targets, trained on the same objective.
 
 ## 2.6 Still open
 
-- The exact actor architecture (after the Dreamer/Plan2Explore reading).
-- The I_pred feature space: which layer's state, and what dimension (≤ 64
-  for InfoNCE).
-- Session length and the "stuck" threshold N for A-1.
-- The Minecraft version, set by the mod's support.
+- The I_pred feature projection for the central arm: which middle layer, and
+  how it is projected to d ≤ 64.
+- The compression-ratio thresholds, set from the untouched GameScaling's own
+  A-0 sessions (normal play) and from a random policy (the noise end).
+- The exact Minecraft version, after checking the no-quit mod's supported
+  versions.
