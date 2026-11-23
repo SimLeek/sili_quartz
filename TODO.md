@@ -141,6 +141,30 @@ smallest controller that sets the dose, working before 3 and 4.
   doses and against Mirostat (Basu et al., ICLR 2021), which targets surprise
   through token temperature: the strongest temperature-style baseline.
 - **Then:** the collapse loop (2c) with the controller in place of a fixed cost.
+- **Why a controller, from the collapse sweep (user, 2026-11-23,
+  [site sweep](docs/results/2026-11-23-collapse-site-sweep.md)):**
+  - With no outside data, greedy + MLP/attention energy at a fixed dose holds test
+    perplexity at 75 → 78.5 from g5 to g10 (4/4 seeds), against greedy's 2025
+    and matched noise's 2294. It does this with almost no tuning. The plateau
+    is the signal: energy is useful while awake, especially when outside
+    training data is not available.
+  - Its free-running output stays loopy (distinct-3 0.086). The reading: low
+    complexity is energy's "comfortable" phase before learning. That phase
+    should end *within one training run*, not over generations, and a fixed
+    dose cannot end it. That is what the controller is for.
+  - The training loss falls to 0.008 at a fixed dose, against greedy's 0.074.
+    Energy should keep a noise floor; lowering that floor once the model
+    predicts well enough should let it learn more.
+- **Scope:** a controller for practically all neurons, not just the MLP and
+  attention sites. Open: how much of it is a simple program and how much an
+  AI (learned, e.g. the actor-critic idea).
+- **Where it should matter most:**
+  - RL with very sparse rewards;
+  - stuck training even with next-input prediction. energy_rl was designed to
+    break stable attractors and zero-init deadlocks (all-zero RNN synapses with
+    all flow into one line trained once energy was on).
+- **Test within one run:** the controller should take free distinct-3 up
+  during a run while keeping the plateau, against the fixed dose.
 - **When this lands, check whether 6 (energy for RL task solving) belongs
   inside it.** Note the two are different "energies": 2c/2d is sili's
   per-neuron homeostatic energy; the Energy-Based Reasoners paper means a
