@@ -203,35 +203,41 @@ per-region targets, trained on the same objective.
 
 **Memory estimate for training GameScaling-0.8B on the P40.** These are
 estimates, measured in A-0 before any choice:
-- *Fixed cost:* fp32 weights about 3.4 GB, gradients about 3.4 GB, AdamW
-  state about 6.8 GB. About 13.6 GB before activations.
+- *Fixed cost (measured weights):* fp32 weights 2.9 GiB (tied embeddings),
+  gradients 2.9 GiB, AdamW state 5.7 GiB. About 11.5 GiB before activations.
 - *Activations:*
   - One 800 × 600 viewport frame is about 470 vision tokens (patch 16, merge
     2), and each call also carries a history of frames.
-  - *Where the 1 MiB per token per layer comes from* (measured in 2c): it is
-    exactly one copy of the linear-attention state, 16 heads × 128 × 128 ×
-    4 bytes.
-    - Without flash-linear-attention, transformers falls back to a reference
-      PyTorch recurrence, and autograd saves that state at *every* token for
-      the backward pass.
-    - The full-attention layers (6 of 24) only save about 4 KB per token
-      (hidden 1024).
-  - *So 48 GiB is the worst case:* plain full BPTT through all 2k tokens of
-    context, with every per-token state stored. It is not a cost of 2k tokens
-    as such. The forward pass with no grad keeps one state per layer.
+  - *Measured* ([results](../results/2026-11-23-gamescaling-train-memory.md)):
+    - 8.7 MiB per token for the whole model in training, about 0.36 MiB per
+      token per layer. The earlier "1 MiB per layer" was about 3× too high.
+    - The largest share is the gated delta net (about 377 KiB per token per
+      linear layer), from transformers' pure-PyTorch *chunked* fallback. It
+      also runs in training: the state is kept per 64-token chunk, and the
+      per-token cost is the chunk intermediates.
+    - Next come the fp32 logits kept by the loss (about 1 MiB per token) and
+      the MLPs.
+  - *What fits:*
+    - the fixed fp32 cost is about 11.5 GiB;
+    - 1k tokens of backprop fits, at about 20 GiB;
+    - 2k tokens does not, at about 29 GiB.
   - *With e-BPTT* (quartz PR #4, per-chunk backward with a carried
     Jacobian, flat memory in T):
     - only the current chunk is stored, e.g. the newest frame plus its action
-      tokens, about 500 tokens, about 12 GiB across 24 layers;
+      tokens: about 500 tokens, about 4.4 GiB;
     - older context is a detached state with carried credit;
     - a smaller chunk scales that down linearly.
     - It is not yet wired into the HF Qwen3.5 layers. That is a build item.
   - *Other levers:*
     - gradient checkpointing of the recurrence (recompute the states in
       backward);
-    - flash-linear-attention's chunked kernel, which recomputes instead of
-      storing. It needs Triton, which likely does not support the P40
-      (sm_61) but would run on the 2060 (sm_75). To be checked.
+    - flash-linear-attention's chunk kernel. It is a training kernel too,
+      with its own backward that recomputes the within-chunk intermediates.
+      It should cut the largest share; by how much is not measured. It needs
+      Triton: P40 (sm_61) support is unconfirmed, and the 2060 (sm_75) should
+      work.
+    - Computing the loss in pieces, so the full fp32 logits (about 1 MiB per
+      token) are never all held at once.
 
 **If one P40 is not enough, in this order:**
 1. **The P40 alone,** with e-BPTT chunks (or checkpointing) and split batches.
