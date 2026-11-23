@@ -89,6 +89,14 @@ motivates 2d. Differences from the plan below:
 - item 3 ran as the generational loop: the 2060 teacher writes, the P40
   student trains on it, and the student answers by handing its weights back
   (not text). Messages were 64 tokens, not 1k–4k.
+- **Not doing: the 1k–4k-token dialogue (user, 2026-11-23), on compute grounds.**
+  - Scaled from the measured sweep, 128 samples × 4k tokens is 32× the tokens:
+    about 2.7 h per energy generation, about 100 h per seed for the 8 core arms,
+    about 17 days for 4 seeds. 2k tokens halves that.
+  - Backprop at about 1 MiB/token/layer needs about 96 GiB per 4k sequence, so
+    the P40 needs checkpointing (about +1/3 training time).
+  - 8 conversations instead of 128 cuts the compute, but gives noisy metrics
+    and slow sequential generation (no flash-linear-attention on the 2060).
 - item 5's dose sweep did not go down to 1e-6 and had no n + k pass rule.
   Doses run: .001–.1 MLP-only, and the per-site arms.
 
