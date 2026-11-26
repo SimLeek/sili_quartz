@@ -83,26 +83,64 @@ generations, 4 seeds, greedy teacher).
 
 ## 2.4 Track A: actor (no extrinsic signal at all)
 
-**Environment:** vanilla Minecraft on the sandbox, played through robonet on
+**Environment:** Minecraft on the sandbox, played through robonet on
 localhost. The AI sees only the screen, through a viewport it zooms and pans
-itself, and acts only through keys and the mouse.
-- **Containment:**
-  - Block OS key combinations (Alt+Tab, Alt+F4, Super) at robonet.
-  - Block Esc, or use the no-quit Fabric mod.
-  - A watchdog restarts the game into the same world if it exits.
-- **Evaluation only:** Minecraft's per-player statistics file (distance,
-  blocks mined, items), plus chunks visited if a mod is needed. None of it
-  reaches the agent.
-- **Environment, decided (user): vanilla Minecraft, Fabric and robonet.**
-  - The version is the one the no-quit mod supports; the user is checking
-    which.
-  - *Setup (user, a short internet window):* sign in, install Minecraft, the
-    Fabric loader and the mod.
-  - *Mods needed:* the no-quit mod. Add a position/chunk logger only if the
-    vanilla statistics file is not enough for evaluation.
+itself, hears the game's audio, and acts only through keys and the mouse.
+- **Installed (user, 2026-11-25):** Minecraft **1.20.1 with Forge**, launched
+  from Prism Launcher (one instance, `1.20.1`). The no-quit mod (`no_way_out`)
+  needs Forge, not Fabric.
+  - *Mods:* no_way_out (no quit button; leave only with `/nwo_out` in chat, or
+    from outside), plus mods the user chose because the game is close to
+    unplayable without a wiki: JEI (recipes), Jade (names what the crosshair
+    points at), Patchouli (in-game books), Xaero's minimap and world map,
+    AppleSkin, Enchantment Descriptions, Mouse Tweaks, Quick Stack, No
+    Durability (tools never break), CC: Tweaked (in-game computers), Enhanced
+    Drones, LogicSense, realistic/water/block physics mods, Oculus (shaders),
+    and performance mods (Embeddium, ModernFix, FerriteCore, Radium,
+    ImmediatelyFast, Entity Culling).
+  - Jade's popup and the minimap are *on screen*, so they are allowed: the
+    agent still gets nothing but pixels and sound.
+  - *World:* "World 1", seed 7486845543670573801, survival, Normal, cheats
+    off, world spawn (16, 69, 0).
   - MineStudio 1.1.6 (Minecraft 1.16.5) is GameScaling's own published
     evaluation route. It is not used here, but remains the reference for
     the model's published numbers.
+- **Session control, `tools/minecraft.py` (runs on the sandbox):**
+  - `status` (game running, window title, player in the world), `stop`
+    (SIGTERM then SIGKILL; the mod does not guard against that).
+  - `reset` puts the world back to its seed: a template of `level.dat` with
+    the player removed and the clock at 0, plus datapacks and server config.
+    Minecraft regenerates terrain from the seed and spawns a new player.
+  - `launch` sets fullscreen and no pause on focus loss in `options.txt`, then
+    `prismlauncher --launch 1.20.1 --world "World 1"`, and waits for "joined
+    the game" in the log (52.6 s in the first test).
+  - `session` = stop, reset, launch: the start of every 2 h run.
+- **robonet on localhost (robot_network PR #5):** endpoint on the game's
+  display, headless brain, and the AI as a separate process on the shared
+  memory bridge. Frames are 640×480 (the brain's `ai_res`), 30 fps; audio is
+  48 kHz stereo float32 chunks.
+  - `--monitor-dir` writes `frame.png` and `status.json` for watching a run
+    over ssh at a low rate (a few seconds per frame is enough for checks).
+- **Containment:**
+  - The endpoint refuses key presses that complete a blocked combo
+    (`blocked_key_combos` in `~/.robotar/settings.json`): Esc, F3 (debug
+    screen with coordinates and block data), F11, Alt+F4, Alt+Tab, Super,
+    Ctrl+Alt+Delete/Backspace, Ctrl+Alt+F1–F7 (switching virtual consoles).
+    Robonet has no Alt key at all, so the Alt entries guard only against a
+    future change.
+  - The no-quit mod removes the quit button.
+  - **Kill switch, for both of us:** `python -m robonet.killswitch` runs in the
+    game's X session. Ctrl+Alt+Shift+F12 on the physical keyboard stops every
+    robot_network python process and releases all keys and buttons. The
+    endpoint always refuses that combo. Over ssh: `python -m
+    robonet.killswitch --now`.
+  - A watchdog (A.5) relaunches the game into the world if it exits.
+- **Audio:** GameScaling takes images, not sound. Options: drop the audio for
+  the GameScaling arms, or render it as a spectrogram image beside the frame.
+  Decided at A.7.
+- **Evaluation only:** Minecraft's per-player statistics file (distance,
+  blocks mined, items), plus chunks visited if a mod is needed. None of it
+  reaches the agent.
 - **Session length:** 2 hours (user).
 - **Stuck or collapsed: the compression check (user).**
   - Every 1–10 minutes, compress the agent's own action stream (the action
@@ -302,11 +340,12 @@ the user can do (account, internet window, review).
 
 | Step | Owner | What | Done when |
 |---|---|---|---|
-| A.1 | user | Find the Minecraft version the no-quit mod (Trolledin) supports | version recorded here |
-| A.2 | user | **Internet window on the sandbox**: install the Java version that Minecraft version needs, the launcher, and sign in; install the Fabric loader, Fabric API and the no-quit mod; create the world (survival, fixed seed); then go offline | the game reaches the world with the mod loaded |
-| A.3 | me | **Offline check**: the game starts and loads the world with the network off | a launch with no network |
-| A.4 | me | **robonet on localhost**: install it into the sandbox venv (wheels from the laptop, no internet); run the desktop endpoint and the AI bridge headless; frames reach a test client and test keys/mouse reach the game | a scripted test walks forward and turns the camera; viewport size recorded |
-| A.5 | me | **Containment**: block OS combinations (Alt+Tab, Alt+F4, Super), Esc, F3 and F11 at robonet; add a watchdog that relaunches into the world if the game exits | each blocked key sent, and nothing happens; killing the game brings it back |
+| A.1 | user | Find the Minecraft version the no-quit mod supports | **done**: 1.20.1, Forge |
+| A.2 | user | **Internet window on the sandbox**: Prism Launcher, sign in, Forge 1.20.1, the no-quit mod and helper mods; create the world | **done** (2026-11-25); the window stays open for relaunches |
+| A.2b | me | **Session control**: `tools/minecraft.py` (status, stop, seed reset, fullscreen launch into the world) | **done**: stop → reset → launch reached the world in 52.6 s with a new player at spawn |
+| A.3 | me | **Offline check**: the game starts and loads the world with the network off | a launch with no network (if Prism needs the network to launch, the window stays open and this is recorded instead) |
+| A.4 | me | **robonet on localhost**: endpoint, headless brain with monitor, AI bridge | **done** (robot_network PR #5): a bridge client walked, jumped and turned the camera; 640×480 frames at 30 fps and non-silent audio arrived; 8 robonet bugs fixed on the way |
+| A.5 | me | **Containment**: blocked combos at the endpoint, kill switch; a watchdog that relaunches into the world if the game exits | blocklist and kill switch **done** (F11 refused live; hotkey and `--now` both stopped robonet); watchdog still to do |
 | A.6 | me | **Evaluation telemetry**: read the world's per-player statistics file on a timer (evaluation only; never reaches the agent) | stats change while the test client walks; if chunks visited is missing, A.6b: the user installs a logger mod in a second window |
 | A.7 | me | **GameScaling as an actor**: load the full `Qwen3_5ForConditionalGeneration` (vision) on the P40; add GameScaling's prompt template and action parser (`THUSI-Lab/GameScaling`, Apache 2.0, fetched on the laptop and copied over); map the action text to robonet events | it plays through robonet; **inference latency per call** measured against the 200 ms budget |
 | A.8 | me | **A-0 baselines**: one 2 h session of untouched GameScaling, one of a random policy | the reference statistics and the compression thresholds (stuck and noise ends) recorded |
@@ -326,6 +365,7 @@ the user can do (account, internet window, review).
 
 - The compression-ratio thresholds (A.8), from A-0's normal play and from a
   random policy.
-- The exact Minecraft version: whichever the no-quit mod supports (A.1).
+- Audio for the GameScaling arms: dropped, or a spectrogram image (A.7).
+- Whether Prism can launch with the network off (A.3).
 - Whether training fits on the P40 alone (A.9), and the inference latency
   (A.7).

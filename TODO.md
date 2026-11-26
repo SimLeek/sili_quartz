@@ -151,6 +151,12 @@ The generational pilot (`examples/model_collapse.py`) comes before the dialogue.
 
 ## 2d. Minimal energy controller (before sleep, user 2026-11-22)
 Write-up in paper order: [docs/energy-controller/](docs/energy-controller/README.md).
+Track A environment (2026-11-25): Minecraft 1.20.1 + Forge on the sandbox
+(Prism Launcher), driven through robonet on localhost (robot_network PR #5:
+bridge actions, headless monitor, key blocklist, kill switch);
+`tools/minecraft.py` stops, seed-resets and relaunches the world. Steps
+A.1, A.2, A.2b, A.4 done; A.5 needs the relaunch watchdog. See
+[2-methodology.md](docs/energy-controller/2-methodology.md) section 2.5.
 Part 1, introduction and related work, is a first pass (2026-11-23).
 A fixed energy dose is wrong most of the time: raise it to try new things and
 to learn new things, lower it to focus and get accurate output. Build the
