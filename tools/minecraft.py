@@ -244,11 +244,14 @@ def player_state() -> dict:
     except ImportError:
         return {}
     world = GAME / "saves" / WORLD
-    files = sorted((world / "playerdata").glob("*.dat"))
-    if not files:
-        return {}
-    p = nbtlib.load(files[0])
     lv = nbtlib.load(world / "level.dat")["Data"]
+    if "Player" in lv:  # single-player: the host player lives in level.dat
+        p = lv["Player"]
+    else:
+        files = sorted((world / "playerdata").glob("*.dat"))
+        if not files:
+            return {}
+        p = nbtlib.load(files[0])
     x, y, z = (float(v) for v in p["Pos"])
     inv: dict[str, int] = {}
     for item in p.get("Inventory", []):
