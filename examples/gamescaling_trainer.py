@@ -70,6 +70,8 @@ def assistant_content(row: dict) -> str:
 
 def read_rows(log: Path, replay: Path) -> list[dict]:
     rows = []
+    if not log.exists():
+        return rows  # the actor has not logged its first decision yet
     with open(log) as fh:
         for line in fh:
             try:
