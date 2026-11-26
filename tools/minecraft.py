@@ -6,6 +6,8 @@
     python tools/minecraft.py reset             # world back to its seed, fresh player
     python tools/minecraft.py launch [--windowed] [--wait 240]
     python tools/minecraft.py session           # stop, reset, launch, wait until in-world
+    python tools/minecraft.py stats             # evaluation only: per-player statistics
+    python tools/minecraft.py watch             # relaunch into the world whenever the game exits
 
 Needs: Prism Launcher with one instance, DISPLAY/XAUTHORITY for the game's X
 session (defaults below), xdotool, and nbtlib (pip install nbtlib).
@@ -159,9 +161,43 @@ def launch(windowed: bool = False, wait_s: float = 240.0) -> dict:
     return {**status(), "timed_out_after_s": wait_s}
 
 
+def stats() -> dict:
+    """Evaluation only (never shown to the agent): the world's per-player
+    statistics, summed over players. The game writes them on autosave
+    (about every 5 minutes) and when it pauses or stops."""
+    out = {"distance_cm": 0, "jumps": 0, "play_ticks": 0, "deaths": 0,
+           "mined": 0, "crafted": 0, "used": 0, "picked_up": 0, "killed": 0,
+           "distinct_blocks_mined": 0, "distinct_items_crafted": 0}
+    for f in (GAME / "saves" / WORLD / "stats").glob("*.json"):
+        st = json.loads(f.read_text()).get("stats", {})
+        custom = st.get("minecraft:custom", {})
+        out["distance_cm"] += sum(v for k, v in custom.items() if k.endswith("_one_cm"))
+        out["jumps"] += custom.get("minecraft:jump", 0)
+        out["play_ticks"] += custom.get("minecraft:play_time", 0)
+        out["deaths"] += custom.get("minecraft:deaths", 0)
+        for key, name in (("mined", "mined"), ("crafted", "crafted"), ("used", "used"),
+                          ("picked_up", "picked_up"), ("killed", "killed")):
+            out[key] += sum(st.get(f"minecraft:{name}", {}).values())
+        out["distinct_blocks_mined"] += len(st.get("minecraft:mined", {}))
+        out["distinct_items_crafted"] += len(st.get("minecraft:crafted", {}))
+    return out
+
+
+def watch(poll_s: float = 10.0, wait_s: float = 240.0) -> None:
+    """Relaunch the game into the world (no reset) whenever it is not
+    running. One JSON line per event."""
+    while True:
+        if not game_pids():
+            print(json.dumps({"t": time.time(), "event": "game not running, relaunching"}), flush=True)
+            result = launch(False, wait_s)
+            print(json.dumps({"t": time.time(), "event": "launched", **result}), flush=True)
+        time.sleep(poll_s)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["status", "stop", "make-template", "reset", "launch", "session"])
+    ap.add_argument("cmd", choices=["status", "stop", "make-template", "reset", "launch", "session",
+                                    "stats", "watch"])
     ap.add_argument("--windowed", action="store_true")
     ap.add_argument("--wait", type=float, default=240.0)
     a = ap.parse_args()
@@ -180,6 +216,10 @@ def main() -> None:
         stop()
         reset()
         print(json.dumps(launch(a.windowed, a.wait)))
+    elif a.cmd == "stats":
+        print(json.dumps(stats()))
+    elif a.cmd == "watch":
+        watch(wait_s=a.wait)
 
 
 if __name__ == "__main__":
