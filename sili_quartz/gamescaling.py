@@ -181,9 +181,11 @@ class GameScalingPolicy:
         self.temperature = temperature
         self.max_new_tokens = max_new_tokens or (2048 if reasoning else 96)
         tok = processor.tokenizer
-        self.stop_ids = [tok.convert_tokens_to_ids("<|action_end|>")]
-        if tok.eos_token_id is not None:
-            self.stop_ids.append(tok.eos_token_id)
+        # In the 0.8B-S3 tokenizer the action tags are plain text (several
+        # tokens each), not special tokens, so generation stops on the string.
+        end_id = tok.convert_tokens_to_ids("<|action_end|>")
+        self.stop_ids = [i for i in (end_id, tok.eos_token_id) if isinstance(i, int)]
+        self.stop_strings = ["<|action_end|>"]
         self.last_seconds: float | None = None
         self.last_prompt_tokens: int | None = None
 
@@ -215,7 +217,8 @@ class GameScalingPolicy:
             out = self.model.generate(
                 **inputs, max_new_tokens=self.max_new_tokens, do_sample=self.temperature > 0,
                 temperature=self.temperature if self.temperature > 0 else None,
-                eos_token_id=self.stop_ids,
+                eos_token_id=self.stop_ids, stop_strings=self.stop_strings,
+                tokenizer=self.processor.tokenizer,
             )
         completion = self.processor.tokenizer.decode(out[0, inputs["input_ids"].shape[1]:], skip_special_tokens=False)
         if "<|action_end|>" not in completion and "<|action_start|>" in completion:
