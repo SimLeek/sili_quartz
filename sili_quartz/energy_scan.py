@@ -1,0 +1,174 @@
+"""Energy for a live actor and its trainer: one GPU scan over tokens, dose in a tensor.
+
+`energy_hooks.NeuronEnergy` steps every neuron token by token from Python and
+reads results back to the host, which is too slow for a 250-token frame in a
+0.3 s decision and cannot run inside a CUDA graph. This is the same dynamics
+for the configuration used on pretrained models (p = 1, no wake gate, fire
+resets to zero) as a Triton kernel: one thread per neuron, a loop over the
+call's tokens, state kept on the GPU between calls.
+
+- The dose (drive, cost, decay, exploration) is read from a tensor, so a
+  controller (the dual lambda) changes it in place, also under a CUDA graph.
+- Noise comes from torch's default CUDA generator (graph-safe).
+- The kernel returns a gate (0/1) and a constant per entry; the module output
+  is h * gate + const, so gradients pass through kept neurons as in
+  `energy.py` (fired and shut-off neurons output constants).
+- No aux loss: energy here is a perturbation of the forward pass, not trained.
+
+`energy_scan_reference` is the plain-torch loop the kernel is tested against.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import torch
+from torch import Tensor, nn
+
+try:
+    import triton
+    import triton.language as tl
+except ImportError:  # CPU-only test machines
+    triton = None
+
+
+ACTIVATION_THRESHOLD = 1e-4
+
+
+def energy_scan_reference(h: Tensor, e: Tensor, noise: Tensor, dose: Tensor, scale: float = 1.0):
+    """h, noise: (T, M); e: (M,) state, updated in place; dose: [drive, cost, decay, exploration].
+    Returns gate (T, M) in h's dtype and const (T, M) in h's dtype."""
+    drive, cost, decay, expl = (float(v) for v in dose)
+    gates, consts = [], []
+    for t in range(h.shape[0]):
+        x = h[t].float() / scale
+        alive = x.abs() > ACTIVATION_THRESHOLD
+        ne = e * (1 - decay) + drive + expl * noise[t] - cost * torch.where(alive, x, 0.0).abs()
+        fire, shut = ne >= 2.0, ne <= -2.0
+        shut_v = torch.where(shut, e + 2.0, 0.0)
+        ne = torch.where(fire, 0.0, torch.where(shut, -2.0, ne))
+        gates.append((~fire & ~shut & alive).to(h.dtype))
+        consts.append((torch.where(fire, 2.0, shut_v) * scale).to(h.dtype))
+        e.copy_(ne)
+    return torch.stack(gates), torch.stack(consts)
+
+
+if triton is not None:
+    @triton.jit
+    def _energy_scan_kernel(h_ptr, noise_ptr, e_ptr, gate_ptr, const_ptr, dose_ptr, T, M, scale,
+                            BLOCK: tl.constexpr):
+        offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+        mask = offs < M
+        drive = tl.load(dose_ptr + 0)
+        cost = tl.load(dose_ptr + 1)
+        decay = tl.load(dose_ptr + 2)
+        expl = tl.load(dose_ptr + 3)
+        e = tl.load(e_ptr + offs, mask=mask, other=0.0)
+        for t in range(T):
+            x = tl.load(h_ptr + t * M + offs, mask=mask, other=0.0).to(tl.float32) / scale
+            nz = tl.load(noise_ptr + t * M + offs, mask=mask, other=0.0)
+            alive = tl.abs(x) > 1e-4
+            ne = e * (1.0 - decay) + drive + expl * nz - cost * tl.abs(tl.where(alive, x, 0.0))
+            fire = ne >= 2.0
+            shut = ne <= -2.0
+            shut_v = tl.where(shut, e + 2.0, 0.0)
+            ne = tl.where(fire, 0.0, tl.where(shut, -2.0, ne))
+            keep = (fire == 0) & (shut == 0) & alive
+            tl.store(gate_ptr + t * M + offs, keep.to(tl.float32).to(gate_ptr.dtype.element_ty), mask=mask)
+            tl.store(const_ptr + t * M + offs,
+                     (tl.where(fire, 2.0, shut_v) * scale).to(const_ptr.dtype.element_ty), mask=mask)
+            e = ne
+        tl.store(e_ptr + offs, e, mask=mask)
+
+
+def energy_scan(h: Tensor, e: Tensor, noise: Tensor, dose: Tensor, scale: float = 1.0):
+    """Same contract as energy_scan_reference; Triton on CUDA, the loop elsewhere."""
+    if triton is None or not h.is_cuda:
+        return energy_scan_reference(h, e, noise, dose, scale)
+    h = h.contiguous()
+    T, M = h.shape
+    gate = torch.empty_like(h)
+    const = torch.empty_like(h)
+    block = 256
+    _energy_scan_kernel[(triton.cdiv(M, block),)](h, noise, e, gate, const, dose, T, M, float(scale),
+                                                 BLOCK=block)
+    return gate, const
+
+
+@dataclass
+class ScanSite:
+    module: nn.Module
+    mean: float  # mean |h / scale| on ordinary input
+    scale: float = 1.0
+    cost: float = 0.03
+
+
+class ScanEnergy:
+    """Energy on module outputs (B, T, n), stepped over T, state per (batch row, neuron).
+
+    The dose at multiplier m: cost = base*m_cost, drive = cost*mean*m_drive,
+    exploration = min(0.001, base*mean/4)*m_noise, decay = drive/decay_div,
+    as in NeuronEnergy. `set_dose` writes the per-site dose tensors in place.
+    """
+
+    def __init__(self, sites: list[ScanSite], decay_div: float = 40.0, batch: int = 1):
+        self.sites, self.decay_div, self.batch = sites, decay_div, batch
+        self.enabled = True
+        self.states: list[Tensor | None] = [None] * len(sites)
+        self.doses: list[Tensor | None] = [None] * len(sites)
+        self.fired: list[Tensor | None] = [None] * len(sites)  # running device counters
+        self.mult = (1.0, 1.0, 1.0)
+        self.handles = [s.module.register_forward_hook(self._hook(i)) for i, s in enumerate(sites)]
+
+    def _dose_values(self, site: ScanSite) -> list[float]:
+        mc, mn, md = self.mult
+        cost = site.cost * mc
+        drive = cost * site.mean * md
+        expl = min(0.001, site.cost * site.mean / 4) * mn
+        decay = drive / self.decay_div if self.decay_div else 0.0
+        return [drive, cost, decay, expl]
+
+    def set_dose(self, cost_scale: float = 1.0, noise_scale: float = 1.0, drive_scale: float = 1.0) -> None:
+        self.mult = (cost_scale, noise_scale, drive_scale)
+        for i, site in enumerate(self.sites):
+            if self.doses[i] is not None:
+                self.doses[i].copy_(torch.tensor(self._dose_values(site)))
+
+    def reset(self) -> None:
+        for st in self.states:
+            if st is not None:
+                st.zero_()
+
+    def _hook(self, i: int):
+        site = self.sites[i]
+
+        def hook(_module, _args, output):
+            if not self.enabled:
+                return None
+            h = output[0] if isinstance(output, tuple) else output
+            b, t, n = h.shape
+            if self.states[i] is None or self.states[i].numel() != b * n:
+                self.states[i] = torch.zeros(b * n, device=h.device, dtype=torch.float32)  # at rest
+                self.doses[i] = torch.tensor(self._dose_values(site), device=h.device, dtype=torch.float32)
+                self.fired[i] = torch.zeros((), device=h.device, dtype=torch.float32)
+            x = h.transpose(0, 1).reshape(t, b * n)
+            noise = torch.randn(t, b * n, device=h.device, dtype=torch.float32)
+            gate, const = energy_scan(x.detach(), self.states[i], noise, self.doses[i], site.scale)
+            out = x * gate + const
+            self.fired[i].add_((gate == 0).sum())
+            out = out.reshape(t, b, n).transpose(0, 1)
+            return (out, *output[1:]) if isinstance(output, tuple) else out
+
+        return hook
+
+    def changed_count(self) -> float:
+        """Entries changed (fired, shut off or dead-zoned) since the last call. Syncs."""
+        total = sum(float(f) for f in self.fired if f is not None)
+        for f in self.fired:
+            if f is not None:
+                f.zero_()
+        return total
+
+    def remove(self) -> None:
+        for hd in self.handles:
+            hd.remove()
