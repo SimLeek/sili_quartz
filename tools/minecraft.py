@@ -9,7 +9,8 @@
     python tools/minecraft.py save-settings     # once: options + mod settings as the template
     python tools/minecraft.py restore-settings  # put them back (game stopped)
     python tools/minecraft.py stats             # evaluation only: per-player statistics
-    python tools/minecraft.py watch             # relaunch into the world whenever the game exits
+    python tools/minecraft.py watch             # relaunch if the game exits; close folder/browser
+                                                # windows and Prism dialogs, keep the game in front
 
 Needs: Prism Launcher with one instance, DISPLAY/XAUTHORITY for the game's X
 session (defaults below), xdotool, and nbtlib (pip install nbtlib).
@@ -229,14 +230,58 @@ def stats() -> dict:
     return out
 
 
-def watch(poll_s: float = 10.0, wait_s: float = 240.0) -> None:
-    """Relaunch the game into the world (no reset) whenever it is not
-    running. One JSON line per event."""
+# Windows the game (or the agent through it) can open: mods' "open folder"
+# and "open link" buttons start a file manager or a browser.
+CLOSE_CLASSES = {"pcmanfm", "thunar", "nautilus", "firefox", "navigator", "chromium", "google-chrome"}
+DESKTOP_NAMES = {"pcmanfm"}  # pcmanfm's own desktop window: never close
+PRISM_KEEP_PREFIXES = ("Console window", "Prism Launcher")  # Prism's main and console windows
+
+
+def _xdo(*args) -> str:
+    r = subprocess.run(["xdotool", *args], capture_output=True, text=True, env={**os.environ, **X_ENV})
+    return r.stdout.strip()
+
+
+def focus_guard() -> list[str]:
+    """Close windows the game opened (file managers, browsers, Prism dialogs
+    such as "Kill Minecraft?") and put the game window back on top. Returns
+    what it did."""
+    did = []
+    for w in _xdo("search", "--onlyvisible", "--name", ".").split():
+        cls, name = _xdo("getwindowclassname", w).lower(), _xdo("getwindowname", w)
+        prism_dialog = cls == "prismlauncher" and not name.startswith(PRISM_KEEP_PREFIXES)
+        if (cls in CLOSE_CLASSES and name not in DESKTOP_NAMES) or prism_dialog:
+            _xdo("windowclose", w)
+            did.append(f"closed {cls}: {name[:60]}")
+    ids = _xdo("search", "--name", "^Minecraft").split()
+    if ids:
+        mc = ids[0]
+        if _xdo("getactivewindow") != mc:
+            _xdo("windowmap", mc)
+            _xdo("windowactivate", mc)
+            did.append("re-activated the game window")
+    return did
+
+
+def watch(poll_s: float = 0.5, relaunch_every_s: float = 10.0, wait_s: float = 240.0) -> None:
+    """Keep the game up and in front: relaunch it into the world (no reset)
+    when it is not running, and run focus_guard every poll. One JSON line
+    per event."""
+    last_check = 0.0
     while True:
-        if not game_pids():
-            print(json.dumps({"t": time.time(), "event": "game not running, relaunching"}), flush=True)
-            result = launch(False, wait_s)
-            print(json.dumps({"t": time.time(), "event": "launched", **result}), flush=True)
+        now = time.time()
+        if now - last_check >= relaunch_every_s:
+            last_check = now
+            if not game_pids():
+                print(json.dumps({"t": now, "event": "game not running, relaunching"}), flush=True)
+                result = launch(False, wait_s)
+                print(json.dumps({"t": time.time(), "event": "launched", **result}), flush=True)
+        if game_pids():
+            try:
+                for event in focus_guard():
+                    print(json.dumps({"t": time.time(), "event": event}), flush=True)
+            except Exception as e:  # the guard must never stop the watchdog
+                print(json.dumps({"t": time.time(), "event": f"focus guard error: {e}"}), flush=True)
         time.sleep(poll_s)
 
 

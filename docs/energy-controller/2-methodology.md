@@ -143,7 +143,11 @@ itself, hears the game's audio, and acts only through keys and the mouse.
     robot_network python process and releases all keys and buttons. The
     endpoint always refuses that combo. Over ssh: `python -m
     robonet.killswitch --now`.
-  - A watchdog (A.5) relaunches the game into the world if it exits.
+  - A watchdog (A.5, `tools/minecraft.py watch`) relaunches the game into
+    the world if it exits, and every 0.5 s closes windows the game opened
+    (mods' "open folder"/"open link" buttons start a file manager or
+    browser; the agent also reached Prism's "Kill Minecraft?" dialog once
+    the game lost focus) and puts the game back in front.
 - **Reaction time and a fast "cerebellum" (user, 2026-11-26):** GameScaling
   decides every ~0.28 s here (0.2 s is the design and roughly human reaction
   time), and each decision covers 6 action steps at 30 Hz. A small (~100M)
