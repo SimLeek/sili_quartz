@@ -40,9 +40,11 @@ KEEP = ("level.dat", "datapacks", "serverconfig", "icon.png")
 X_ENV = {"DISPLAY": os.environ.get("DISPLAY", ":0"),
          "XAUTHORITY": os.environ.get("XAUTHORITY", f"/run/user/{os.getuid()}/lyxauth")}
 
-# options.txt values for unattended runs: fullscreen, and keep running
-# (not pause) when the window loses focus.
-SESSION_OPTIONS = {"fullscreen": "true", "pauseOnLostFocus": "false"}
+# options.txt values for unattended runs: fullscreen, keep running (not
+# pause) when the window loses focus, and read the mouse from the pointer
+# (re-centered every frame) rather than raw XInput2 device motion, which
+# ignores synthetic (XTest) moves -- robonet's mouse would do nothing.
+SESSION_OPTIONS = {"fullscreen": "true", "pauseOnLostFocus": "false", "rawMouseInput": "false"}
 
 
 def game_pids() -> list[int]:

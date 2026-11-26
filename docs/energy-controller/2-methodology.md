@@ -111,7 +111,12 @@ itself, hears the game's audio, and acts only through keys and the mouse.
   - `reset` puts the world back to its seed: a template of `level.dat` with
     the player removed and the clock at 0, plus datapacks and server config.
     Minecraft regenerates terrain from the seed and spawns a new player.
-  - `launch` sets fullscreen and no pause on focus loss in `options.txt`, then
+  - `launch` sets fullscreen, no pause on focus loss and `rawMouseInput:false`
+    in `options.txt` (raw input reads device motion and ignores the synthetic
+    pointer moves robonet sends; with it off, the game reads each move as an
+    offset from the center and re-centers, so robonet's absolute mouse
+    turns the camera — checked: the camera tilted from the ground to the
+    horizon), then
     `prismlauncher --launch 1.20.1 --world "World 1"`, and waits for "joined
     the game" in the log (52.6 s in the first test).
   - `session` = stop, reset, launch: the start of every 2 h run.
