@@ -328,13 +328,20 @@ game for each model call.
 - Inference stays alone on the 2060 (0.28 s per decision, A.7), so training
   never slows play. Training runs asynchronously on replays of recent play:
   the P40 first, AI0's GTX 1080 and 1660 SUPER if more is needed.
-- **Train LoRA adapters continually and apply them**, not full weights:
-  - a sync is a few MB, so any GPU on either machine can train (a full
-    fp16 copy is 1.6 GB: under a second over PCIe on Bee, ~13 s over the LAN);
-  - the CUDA-graph decoder reads the base weights, so adapters are either
-    merged in place at a sync or applied as one small extra matmul;
-  - dropping the adapters restores the untouched model, for the "does not
-    degrade" comparison with A-0.
+- **Train LoRA adapters continually and merge them into the weights**, so
+  training changes the model itself (ReLoRA-style); the adapter is only a
+  cheap way to compute and ship each update (user):
+  - a sync sends the adapters (a few MB), so any GPU on either machine can
+    train (a full fp16 copy is 1.6 GB: under a second over PCIe on Bee, ~13 s
+    over the LAN);
+  - on the 2060 each sync is an in-place `W += B·A` per adapted matrix,
+    amortized over a few layers per decision so play never blips. The
+    CUDA-graph decoder reads the weights in place, so no graph is
+    recaptured;
+  - the trainer merges the same update into its own copy, resets the adapter
+    (B = 0) and keeps training, so both copies stay identical;
+  - merged updates cannot be dropped, so the untouched model is kept on disk
+    for the "does not degrade" comparison with A-0.
 - Weight diffs are the fallback for anything LoRA cannot express (e.g. norms,
   energy's own parameters): sent as sparse top-k diffs, since a dense diff is
   as large as the weights.
