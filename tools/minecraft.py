@@ -227,7 +227,37 @@ def stats() -> dict:
             out[key] += sum(st.get(f"minecraft:{name}", {}).values())
         out["distinct_blocks_mined"] += len(st.get("minecraft:mined", {}))
         out["distinct_items_crafted"] += len(st.get("minecraft:crafted", {}))
+        mined, crafted = st.get("minecraft:mined", {}), st.get("minecraft:crafted", {})
+        # milestones: the first steps of the tech tree
+        out["logs_mined"] = out.get("logs_mined", 0) + sum(v for k, v in mined.items() if k.endswith(("_log", "_stem")))
+        out["planks_crafted"] = out.get("planks_crafted", 0) + sum(v for k, v in crafted.items() if k.endswith("_planks"))
+        out["crafting_tables_crafted"] = out.get("crafting_tables_crafted", 0) + crafted.get("minecraft:crafting_table", 0)
+    out.update(player_state())
     return out
+
+
+def player_state() -> dict:
+    """Inventory and position from the saved player data (written on autosave,
+    like the statistics), and horizontal distance from the world spawn."""
+    try:
+        import nbtlib
+    except ImportError:
+        return {}
+    world = GAME / "saves" / WORLD
+    files = sorted((world / "playerdata").glob("*.dat"))
+    if not files:
+        return {}
+    p = nbtlib.load(files[0])
+    lv = nbtlib.load(world / "level.dat")["Data"]
+    x, y, z = (float(v) for v in p["Pos"])
+    inv: dict[str, int] = {}
+    for item in p.get("Inventory", []):
+        name = str(item["id"]).removeprefix("minecraft:")
+        inv[name] = inv.get(name, 0) + int(item["Count"])
+    return {"pos": [round(x, 1), round(y, 1), round(z, 1)],
+            "from_spawn_m": round(((x - int(lv["SpawnX"])) ** 2 + (z - int(lv["SpawnZ"])) ** 2) ** 0.5, 1),
+            "health": round(float(p.get("Health", 0)), 1), "inventory": inv,
+            "inventory_items": sum(inv.values())}
 
 
 # Windows the game (or the agent through it) can open: mods' "open folder"
