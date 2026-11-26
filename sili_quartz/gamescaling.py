@@ -404,6 +404,145 @@ class GameScalingPolicy:
         return action, completion
 
 
+class StreamingPolicy(GameScalingPolicy):
+    """Constant cost per decision, for unbounded play: only the new frame turn
+    is run through the model, and decoding is the CUDA-graph decoder.
+
+    Qwen3.5 is mostly recurrent: the 18 linear-attention layers carry the
+    whole past in fixed-size state. The 6 full-attention layers keep a
+    sliding window of KV: the system prompt (an attention sink) plus the
+    last kv_window tokens (about history_len turns); older KV is dropped
+    after each decision. Positions keep counting up, so nothing is
+    renumbered: each turn's M-RoPE positions are computed on the turn alone
+    and shifted (M-RoPE is shift-equivariant). Each turn's text is the
+    template's per-turn piece, so no conversation is ever re-rendered.
+    """
+
+    MARKER = "\x00CONTENT\x00"
+
+    def __init__(self, model, processor, system_prompt: str, kv_window: int | None = None,
+                 history_len: int = 5, temperature: float = 1.0, generator=None, max_len: int = 8192,
+                 max_new_tokens: int | None = None, keep_transcript: bool = False):
+        super().__init__(model, processor, system_prompt, history_len=history_len, temperature=temperature,
+                         max_new_tokens=max_new_tokens, session_turns=0, generator=generator,
+                         fast_decode=True, max_len=max_len)
+        from PIL import Image
+
+        dummy = Image.new("RGB", (64, 64))
+        self.first_text = self._render(self.messages(dummy, []))
+        two = self._render(self.messages(dummy, [(dummy, self.MARKER)]))
+        self.turn_text = two.split(self.MARKER, 1)[1]  # after a past action: end of turn ... new prefill
+        system_part = self.first_text.split("<|im_start|>user", 1)[0]
+        self.sink = len(self.tok(system_part, add_special_tokens=False).input_ids)
+        self.kv_window = kv_window
+        self.per_turn: int | None = None  # tokens one turn adds (measured on the first)
+        self.keep_transcript = keep_transcript  # for checks: every text fed, and the frames
+        self.reset()
+
+    def reset(self) -> None:
+        self.turns = []
+        self.cache = None
+        self.kv_len = 0
+        self.next_pos = 0
+        self.owed = ""  # text of the last action that is not in the cache yet
+        self.transcript: list[str] = []
+        self.frames: list = []
+
+    def _attention_layers(self):
+        return [i for i, t in enumerate(self.decoder.types) if t != "linear_attention"]
+
+    def _trim(self) -> None:
+        window = self.kv_window or (self.history_len * (self.per_turn or 300))
+        if self.kv_len <= self.sink + window:
+            return
+        for i in self._attention_layers():
+            layer = self.cache.layers[i]
+            layer.keys = torch_cat_keep(layer.keys, self.sink, window)
+            layer.values = torch_cat_keep(layer.values, self.sink, window)
+        self.kv_len = self.sink + window
+
+    def act(self, frame) -> tuple[Action, str]:
+        import torch
+
+        t0 = time.perf_counter()
+        dev = self.model.device
+        first = self.cache is None
+        text = self.first_text if first else self.owed + self.turn_text
+        with torch.no_grad():
+            inputs = self.processor(text=[text], images=[frame], return_tensors="pt").to(dev)
+            n = int(inputs["input_ids"].shape[1])
+            rel, _ = self.model.model.get_rope_index(
+                inputs["input_ids"], mm_token_type_ids=inputs["mm_token_type_ids"],
+                image_grid_thw=inputs["image_grid_thw"])
+            positions = rel + self.next_pos
+            out = self.model(
+                input_ids=inputs["input_ids"], pixel_values=inputs["pixel_values"],
+                image_grid_thw=inputs["image_grid_thw"], mm_token_type_ids=inputs["mm_token_type_ids"],
+                position_ids=positions, past_key_values=self.cache, use_cache=True)
+            self.cache = out.past_key_values
+            self.kv_len += n
+            self.next_pos = int(positions.max()) + 1
+            self.last_positions = positions
+            if self.keep_transcript:
+                self.transcript.append(text)
+                self.frames.append(frame)
+            if dev.type == "cuda":
+                torch.cuda.synchronize(dev)
+            t1 = time.perf_counter()
+            completion, fed = self._decode_stream(out.logits[0, -1])
+        action = parse_action(self.prefill + completion)
+        self.turns.append((None, action.text))
+        self.turns = self.turns[-self.history_len:]
+        if first:
+            self.per_turn = None
+        elif self.per_turn is None:
+            self.per_turn = n + fed
+        self._trim()
+        self.last_prefill_s, self.last_decode_s = t1 - t0, time.perf_counter() - t1
+        self.last_seconds = time.perf_counter() - t0
+        self.last_new_tokens, self.last_prompt_tokens, self.last_generated = n, self.kv_len, fed + 1
+        self.last_reused = not first
+        return action, completion
+
+    def _decode_stream(self, logits) -> tuple[str, int]:
+        """Sample in the action vocabulary until the '<' of the end tag. The
+        last token is not fed; what it and the end tag owe is fed with the
+        next turn."""
+        dec = self.decoder
+        dec.load(self.cache, self.kv_len, self.next_pos - self.kv_len)
+        logits = logits[dec.vocab_ids]
+        made: list[int] = []
+        text = ""
+        for _ in range(self.max_new_tokens):
+            token = self.vocab[self._sample(logits)]
+            made.append(token)
+            text = self.tok.decode(made, skip_special_tokens=False)
+            if token == self.tok.eos_token_id or ACTION_END in text or (
+                    text.count(";") >= STEPS and "<" in text.rsplit(";", 1)[-1]):
+                break
+            logits = dec.step(token)[0]
+        fed = len(made) - 1
+        dec.store(self.cache)
+        self.kv_len += fed
+        self.next_pos += fed
+        held = self.tok.decode(made[:-1], skip_special_tokens=False)
+        if self.keep_transcript:
+            self.transcript.append(held)
+        if ACTION_END not in text and "<" in text.rsplit(";", 1)[-1]:
+            text = text[: text.rfind("<")] + ACTION_END
+        elif ACTION_END not in text:
+            text = text + ACTION_END  # ran out of tokens: close it so the template stays well-formed
+        self.owed = text[len(held):] if text.startswith(held) else ACTION_END
+        return text, fed
+
+
+def torch_cat_keep(x, head: int, tail: int):
+    """Keep the first `head` and last `tail` positions of a (b, h, L, d) KV tensor."""
+    import torch
+
+    return torch.cat([x[:, :, :head], x[:, :, -tail:]], dim=2).contiguous()
+
+
 # -- execution through robonet ------------------------------------------------------------
 
 
@@ -446,3 +585,46 @@ class RobonetExecutor:
 
     def release_all(self) -> None:
         self._set_held([])
+
+
+class PipelinedExecutor(RobonetExecutor):
+    """Plays chunks on its own thread, back to back, while the caller
+    computes the next one. If the next chunk is late, the last step's keys
+    stay held (a step lasts until the next one begins). Records, per chunk,
+    when its frame was captured and when its first step ran."""
+
+    def __init__(self, client, step_s: float = 1.0 / 30.0):
+        super().__init__(client, step_s)
+        import queue
+        import threading
+
+        self.queue: "queue.Queue" = queue.Queue()
+        self.chunk_end = time.perf_counter()  # when the chunk being played finishes
+        self.timings: list[dict] = []
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def submit(self, action: Action, frame_time: float) -> None:
+        self.queue.put((action, frame_time))
+
+    def _run(self) -> None:
+        import queue
+
+        while not self._stop.is_set():
+            try:
+                action, frame_time = self.queue.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            start = time.perf_counter()
+            self.chunk_end = start + STEPS * self.step_s
+            prev = self.timings[-1]["start"] if self.timings else None
+            self.timings.append({"frame_time": frame_time, "start": start,
+                                 "reaction_s": start - frame_time,
+                                 "interval_s": None if prev is None else start - prev})
+            self.execute(action)
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=1.0)
+        self.release_all()

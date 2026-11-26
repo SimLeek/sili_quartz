@@ -140,6 +140,14 @@ itself, hears the game's audio, and acts only through keys and the mouse.
     endpoint always refuses that combo. Over ssh: `python -m
     robonet.killswitch --now`.
   - A watchdog (A.5) relaunches the game into the world if it exits.
+- **Reaction time and a fast "cerebellum" (user, 2026-11-26):** GameScaling
+  decides every ~0.28 s here (0.2 s is the design and roughly human reaction
+  time), and each decision covers 6 action steps at 30 Hz. A small (~100M)
+  supermimic model running alongside it would not lower reaction time, but
+  would act as a cerebellum: it handles small expected changes on its own
+  (e.g. re-positioning a hand to catch a ball), while anything unexpected
+  still needs the large model. Not built yet; noted as the way to make the
+  ~0.2 s decisions feel continuous.
 - **Audio:** GameScaling takes images, not sound. Options: drop the audio for
   the GameScaling arms, or render it as a spectrogram image beside the frame.
   Decided at A.7.
@@ -352,7 +360,7 @@ the user can do (account, internet window, review).
 | A.4 | me | **robonet on localhost**: endpoint, headless brain with monitor, AI bridge | **done** (robot_network PR #5): a bridge client walked, jumped and turned the camera; 640×480 frames at 30 fps and non-silent audio arrived; 8 robonet bugs fixed on the way |
 | A.5 | me | **Containment**: blocked combos at the endpoint, kill switch; a watchdog that relaunches into the world if the game exits | blocklist, kill switch and watchdog **done** (F11 refused live; hotkey and `--now` stopped robonet; `tools/minecraft.py watch` relaunched a killed game into the world in 50.7 s) |
 | A.6 | me | **Evaluation telemetry**: read the world's per-player statistics file on a timer (evaluation only; never reaches the agent) | `tools/minecraft.py stats` **done** (distance, jumps, play time, mined/crafted/used/picked up/killed, deaths); the game writes the file on autosave (~5 min); chunks visited still missing (A.6b) |
-| A.7 | me | **GameScaling as an actor**: load the full `Qwen3_5ForConditionalGeneration` (vision) on the P40; add GameScaling's prompt template and action parser (from the model card); map the action text to robonet events | **done**: plays through robonet, 20/20 actions parsed; **4.3 s per call** (budget 0.2 s); [results and options](../results/2026-11-26-gamescaling-actor-smoke.md) |
+| A.7 | me | **GameScaling as an actor**: load the full `Qwen3_5ForConditionalGeneration` (vision); prompt template and action parser from the model card; map the action text to robonet events | **done**: plays through robonet; **0.28 s per decision** live on the 2060 (fp16), down from 4.3 s ([results](../results/2026-11-26-gamescaling-actor-smoke.md)): new frame only with a sliding KV window, CUDA-graph decode, 640×360 frames, pipelined execution |
 | A.8 | me | **A-0 baselines**: one 2 h session of untouched GameScaling, one of a random policy | the reference statistics and the compression thresholds (stuck and noise ends) recorded |
 
 ### Track A: training and runs

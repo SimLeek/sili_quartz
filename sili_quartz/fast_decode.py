@@ -8,7 +8,8 @@ it once as a CUDA graph:
 - linear-attention layers: their conv state and recurrent state are fixed
   size, updated in place;
 - full-attention layers: a KV buffer of max_len positions, and an additive
-  mask that opens one more position per step;
+  mask that opens one more position per step; one graph per length bucket
+  (1k, 2k, 4k, ... max_len) so attention reads only the part in use;
 - position: text tokens have the same position on all three M-RoPE axes,
   which makes M-RoPE plain RoPE at (index + rope delta).
 
@@ -66,7 +67,10 @@ class GraphDecoder:
             self.vocab_ids = torch.as_tensor(list(vocab_ids), dtype=torch.long, device=dev)
             self.head_w = model.lm_head.weight[self.vocab_ids].detach().contiguous()
         self.logits = None
-        self.graph = None
+        self.graphs: dict[int, tuple] = {}  # window -> (graph, its logits tensor)
+        self.pool = None
+        self.buckets = sorted({min(max_len, 1024 * 2 ** j) for j in range(16) if 1024 * 2 ** j < max_len} | {max_len})
+        self.window = max_len
         self.length = 0
 
     # -- the step -------------------------------------------------------------------
@@ -122,10 +126,12 @@ class GraphDecoder:
         self.v[i].index_copy_(2, self.write_idx, v[:, :, None].to(self.dtype))
         rep = self.n_q // self.n_kv
         qh = q.view(1, self.n_kv, rep, self.hd)  # group query heads by their kv head
-        scores = torch.einsum("bgrd,bgld->bgrl", qh.float(), self.k[i].float()) * (self.hd ** -0.5)
-        scores = scores + self.mask[0, 0]  # (1, g, rep, L)
-        attn = scores.softmax(-1)
-        out = torch.einsum("bgrl,bgld->bgrd", attn, self.v[i].float()).reshape(1, -1).to(h.dtype)
+        W = self.window  # attend over the first W positions only (a length bucket)
+        keys, values = self.k[i][:, :, :W], self.v[i][:, :, :W]
+        scores = torch.einsum("bgrd,bgld->bgrl", qh.to(self.dtype), keys).float() * (self.hd ** -0.5)
+        scores = scores + self.mask[0, 0, :, :W]  # (1, g, rep, W)
+        attn = scores.softmax(-1).to(self.dtype)
+        out = torch.einsum("bgrl,bgld->bgrd", attn, values).reshape(1, -1).to(h.dtype)
         return at.o_proj(out * torch.sigmoid(gate))
 
     def _step(self):
@@ -189,13 +195,15 @@ class GraphDecoder:
         self.token.fill_(token)
         self.write_idx.fill_(self.length)
         self.pos.fill_(float(self.length + self.rope_delta))
+        # smallest captured length bucket that holds the new position
+        self.window = next(b for b in self.buckets if b > self.length)
         if not self.use_graph:
             self.logits = self._step()
+        elif self.window not in self.graphs:
+            self._capture()  # ends with one real replay
         else:
-            if self.graph is None:
-                self._capture()  # ends with one real replay
-            else:
-                self.graph.replay()
+            graph, self.logits = self.graphs[self.window]
+            graph.replay()
         self.length += 1
         return self.logits
 
@@ -209,13 +217,16 @@ class GraphDecoder:
             for _ in range(2):
                 self._step()
         torch.cuda.current_stream(self.dev).wait_stream(s)
-        self.graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(self.graph):
+        graph = torch.cuda.CUDAGraph()
+        if self.pool is None:
+            self.pool = torch.cuda.graph_pool_handle()
+        with torch.cuda.graph(graph, pool=self.pool):
             self.logits = self._step()
+        self.graphs[self.window] = (graph, self.logits)
         for i, c in saved[0].items():
             self.conv[i].copy_(c)
         for i, r in saved[1].items():
             self.rec[i].copy_(r)
         self.mask.copy_(saved[2])
         # capture does not run the step; replay now does it once for real
-        self.graph.replay()
+        graph.replay()

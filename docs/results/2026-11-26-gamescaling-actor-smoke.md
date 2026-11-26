@@ -90,3 +90,33 @@ Where the 0.41 s on the 2060 goes:
   multiplies, 11% attention over the 6k context.
 - Flash-linear-attention made the P40 *slower* (decode 31 → 42 ms/token
   before the CUDA graph); the graph decoder does not use it.
+
+## Real-time version: frames, length buckets, streaming, pipelining
+
+- **640×360 frames** (robonet `ai_res`; GameScaling's own Minecraft evaluation
+  rendered 640×360 and upscaled to 480p): 251 instead of 436 image tokens per
+  frame.
+- **Length buckets** for the decode graphs (1k, 2k, 4k, ... positions):
+  attention reads only the KV in use. In fp16 on the 2060 the graph itself
+  matters too (10.5 ms/token vs 21.5 ms without it).
+- **`StreamingPolicy`**: the 18 linear-attention layers carry the past in
+  fixed-size state, so the 6 full-attention layers keep only a sliding KV
+  window (the 1,007-token system prompt as a sink, plus the last ~5 turns);
+  positions keep counting up. Cost per decision is constant for unbounded
+  play (the session version re-read 5 turns every 30 decisions, about 1 s, and
+  its prefill grew with the context). Check: streamed vs fresh prefill of the
+  same transcript KL 4e-6, same argmax, positions identical.
+- **Pipelining** (`PipelinedExecutor`): the next decision is computed while
+  the current chunk plays.
+
+Live, 40 decisions, 2060 fp16 with Minecraft on the same card:
+
+| Measure | Seconds |
+|---|---|
+| compute per decision (prefill 0.11 + decode 0.17) | 0.28 (max 0.35) |
+| reaction time (frame captured -> first step of its chunk) | 0.28 (max 0.35) |
+| interval between chunks (each chunk is 0.2 s of actions) | 0.28 (max 0.35) |
+
+40/40 parsed. Reaction time is a property of this model: a decision has to
+read the frame and write about 19 tokens. About 0.2 s is human reaction time
+and is the target here; see the note on supermimic in the methodology.
