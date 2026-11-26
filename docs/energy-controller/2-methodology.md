@@ -119,7 +119,11 @@ itself, hears the game's audio, and acts only through keys and the mouse.
     horizon), then
     `prismlauncher --launch 1.20.1 --world "World 1"`, and waits for "joined
     the game" in the log (52.6 s in the first test).
-  - `session` = stop, reset, launch: the start of every 2 h run.
+  - `session` = stop, reset, restore settings, launch: the start of every
+    2 h run. The agent can open option and mod screens (it did: JEI,
+    Xaero's maps), so game options, `config/`, `defaultconfigs/` and
+    `xaero/` are restored from a template (`save-settings`, once) at every
+    reset; per-world data (bookmarks, map caches, waypoints) is dropped.
 - **robonet on localhost (robot_network PR #5):** endpoint on the game's
   display, headless brain, and the AI as a separate process on the shared
   memory bridge. Frames are 640×480 (the brain's `ai_res`), 30 fps; audio is

@@ -5,7 +5,9 @@
     python tools/minecraft.py make-template     # once, from the existing world
     python tools/minecraft.py reset             # world back to its seed, fresh player
     python tools/minecraft.py launch [--windowed] [--wait 240]
-    python tools/minecraft.py session           # stop, reset, launch, wait until in-world
+    python tools/minecraft.py session           # stop, reset world, restore settings, launch
+    python tools/minecraft.py save-settings     # once: options + mod settings as the template
+    python tools/minecraft.py restore-settings  # put them back (game stopped)
     python tools/minecraft.py stats             # evaluation only: per-player statistics
     python tools/minecraft.py watch             # relaunch into the world whenever the game exits
 
@@ -39,6 +41,9 @@ WORLD = os.environ.get("MC_WORLD", "World 1")
 GAME = PRISM / "instances" / INSTANCE / "minecraft"
 TEMPLATE = Path(os.environ.get("MC_TEMPLATE_DIR", Path.home() / "mc_templates")) / WORLD
 KEEP = ("level.dat", "datapacks", "serverconfig", "icon.png")
+SETTINGS_TEMPLATE = Path(os.environ.get("MC_SETTINGS_DIR", Path.home() / "mc_templates" / "settings"))
+# Game options and mod settings the agent can change from inside the game.
+SETTINGS = ("options.txt", "optionsof.txt", "optionsshaders.txt", "config", "defaultconfigs", "xaero")
 X_ENV = {"DISPLAY": os.environ.get("DISPLAY", ":0"),
          "XAUTHORITY": os.environ.get("XAUTHORITY", f"/run/user/{os.getuid()}/lyxauth")}
 
@@ -131,6 +136,47 @@ def reset() -> None:
     shutil.copytree(TEMPLATE, dst)
 
 
+def _per_world(path: Path) -> bool:
+    """Data that belongs to one world (JEI bookmarks, map caches, waypoints):
+    left out of the settings template, so a reset world starts without it."""
+    return WORLD in path.parts
+
+
+def save_settings(force: bool = False) -> None:
+    if SETTINGS_TEMPLATE.exists() and not force:
+        sys.exit(f"{SETTINGS_TEMPLATE} exists; pass --force to replace it")
+    if SETTINGS_TEMPLATE.exists():
+        shutil.rmtree(SETTINGS_TEMPLATE)
+    SETTINGS_TEMPLATE.mkdir(parents=True)
+    for name in SETTINGS:
+        src = GAME / name
+        if src.is_dir():
+            shutil.copytree(src, SETTINGS_TEMPLATE / name,
+                            ignore=lambda d, names: [n for n in names if n == WORLD])
+        elif src.exists():
+            shutil.copy2(src, SETTINGS_TEMPLATE / name)
+    print(json.dumps({"saved_settings": str(SETTINGS_TEMPLATE)}))
+
+
+def restore_settings() -> None:
+    """Put the settings template back (the game must be stopped). Per-world
+    data is removed, not restored."""
+    if game_pids():
+        sys.exit("stop the game first")
+    if not SETTINGS_TEMPLATE.exists():
+        sys.exit("no settings template; run save-settings once")
+    for name in SETTINGS:
+        dst, src = GAME / name, SETTINGS_TEMPLATE / name
+        if dst.is_dir():
+            shutil.rmtree(dst)
+        elif dst.exists():
+            dst.unlink()
+        if src.is_dir():
+            shutil.copytree(src, dst)
+        elif src.exists():
+            shutil.copy2(src, dst)
+
+
 def set_options(values: dict) -> None:
     opt = GAME / "options.txt"
     lines = opt.read_text().splitlines()
@@ -197,7 +243,8 @@ def watch(poll_s: float = 10.0, wait_s: float = 240.0) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cmd", choices=["status", "stop", "make-template", "reset", "launch", "session",
-                                    "stats", "watch"])
+                                    "stats", "watch", "save-settings", "restore-settings"])
+    ap.add_argument("--force", action="store_true")
     ap.add_argument("--windowed", action="store_true")
     ap.add_argument("--wait", type=float, default=240.0)
     a = ap.parse_args()
@@ -215,7 +262,14 @@ def main() -> None:
     elif a.cmd == "session":
         stop()
         reset()
+        if SETTINGS_TEMPLATE.exists():
+            restore_settings()
         print(json.dumps(launch(a.windowed, a.wait)))
+    elif a.cmd == "save-settings":
+        save_settings(a.force)
+    elif a.cmd == "restore-settings":
+        restore_settings()
+        print(json.dumps({"restored_settings": str(SETTINGS_TEMPLATE)}))
     elif a.cmd == "stats":
         print(json.dumps(stats()))
     elif a.cmd == "watch":
