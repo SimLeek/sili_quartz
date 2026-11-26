@@ -275,6 +275,22 @@ So after the screen, survivors from different groups can be combined: for
 example, the best term + self + (dual + bored). A small factorial over the
 add-ons of the surviving terms is cheaper than screening every combination.
 
+**Reasoning probes (evaluation only, user 2026-11-26).** The model plays in
+direct mode, so its action stream has no text. To read what it attends to,
+probes let it think before acting on a game frame (the model card's
+reasoning mode), 4–6 samples at a time because most samples skip thinking:
+- baselines: a separate untouched copy on the P40 reads the frame robonet
+  last sent the AI, once a minute (`examples/reasoning_probe.py`);
+- training arms: the trainer probes the weights being trained every 5
+  minutes (`RUN/probes.jsonl`).
+Scored by `tools/probe_repetition.py`: distinct word 3-grams, the share of
+each thought's 4-grams already said earlier in the run, and the most
+repeated sentences.
+- *Pre-registered reading (user's hypothesis):* thoughts repeat in every
+  arm, since the model is a neocortex without a hippocampus, but they repeat
+  **less** in trained arms than in the untouched model (lower reuse4,
+  higher distinct3), and the recurring sentences change over a training run.
+
 **Staged protocol (user): one P40, so runs go one at a time.**
 1. **Screen.** One 2 h session per arm and baseline. That is 11 sessions,
    about 22 h. Any arm that shows one of the following is ruled out:
