@@ -324,6 +324,21 @@ game for each model call.
 - Training updates can run asynchronously from acting, on a replay of the
   last stretch of play.
 
+**Training alongside real-time play (user, 2026-11-26):**
+- Inference stays alone on the 2060 (0.28 s per decision, A.7), so training
+  never slows play. Training runs asynchronously on replays of recent play:
+  the P40 first, AI0's GTX 1080 and 1660 SUPER if more is needed.
+- **Train LoRA adapters continually and apply them**, not full weights:
+  - a sync is a few MB, so any GPU on either machine can train (a full
+    fp16 copy is 1.6 GB: under a second over PCIe on Bee, ~13 s over the LAN);
+  - the CUDA-graph decoder reads the base weights, so adapters are either
+    merged in place at a sync or applied as one small extra matmul;
+  - dropping the adapters restores the untouched model, for the "does not
+    degrade" comparison with A-0.
+- Weight diffs are the fallback for anything LoRA cannot express (e.g. norms,
+  energy's own parameters): sent as sparse top-k diffs, since a dense diff is
+  as large as the weights.
+
 ## 2.5 Step-by-step order
 
 **Owners:** *me* means Claude, running on the sandbox. *user* means a step only
