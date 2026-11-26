@@ -132,6 +132,14 @@ def test_action_vocab_covers_every_token_of_valid_actions():
 
     tok = AutoTokenizer.from_pretrained(MODEL_DIR)
     vocab = set(action_vocab(tok))
+    from sili_quartz.gamescaling import PREFILL_DIRECT
+
+    # what follows the prefill, tokenized in context: a negative X merges with ">"
+    for tail in (">-37 -3 0 ; W ; ; ; ; ;<|action_end|>", ">37 3 0 ; W ; ; ; ; ;<|action_end|>"):
+        full = tok.encode(PREFILL_DIRECT + tail, add_special_tokens=False)
+        head = tok.encode(PREFILL_DIRECT, add_special_tokens=False)
+        assert full[: len(head)] == head, "the prefill must stay a token prefix"
+        assert set(full[len(head):]) <= vocab, tail
     for text in ("-37 -3 0 ; LB S ; LB ; LB ; LB ; LB ; LB<|action_end|>",
                  "1000 -1000 5 ; W A S D ; Space Ctrl ; ; ; ; nine<|action_end|>",
                  "0 0 0 ;  ;  ;  ;  ;  ; <|action_end|>"):

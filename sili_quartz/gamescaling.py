@@ -75,7 +75,9 @@ MINECRAFT_RULES = """You are playing Minecraft (Java Edition 1.20.1, survival mo
 ## Rules
 - Holding the attack button on a block breaks it after a moment and drops it as an item; walk over items to pick them up.
 - Health falls from falls, drowning, lava, hunger and hostile creatures, which mostly appear at night and in the dark. At zero health you die and respawn.
-- Items are crafted from other items in the inventory's crafting grid or at a crafting table."""
+- Items are crafted from other items in the inventory's crafting grid or at a crafting table.
+- If you see a "You Died!" screen, move the mouse onto the Respawn button and click it with LB. Then you can play again.
+- On a menu screen the mouse moves an arrow. Move the arrow onto a button and click LB to press it."""
 
 MINECRAFT_KEYS = [
     ("W", "Move forward"), ("A", "Strafe left"), ("S", "Move backward"), ("D", "Strafe right"),
@@ -176,7 +178,7 @@ def action_vocab(tokenizer, samples: int = 4000, seed: int = 0) -> list[int]:
         sep = rng.choice([" ; ", " ;  ", ";", " ;"])
         text = f"{x} {y} {z}{sep}" + sep.join(groups) + ACTION_END
         ids.update(tokenizer.encode(text, add_special_tokens=False))
-    for t in (ACTION_END, "<|im_end|>"):
+    for t in (ACTION_END, "<|im_end|>", ">", ">-"):  # ">" / ">-" finish the prefilled tag
         ids.update(tokenizer.encode(t, add_special_tokens=False))
     if tokenizer.eos_token_id is not None:
         ids.add(tokenizer.eos_token_id)
@@ -187,9 +189,11 @@ def action_vocab(tokenizer, samples: int = 4000, seed: int = 0) -> list[int]:
 
 USER_TEXT = "current game screen"
 # The chat template renders a past turn without reasoning as
-# "<think>\n\n</think>\n\n" + action, so prefilling up to the action tag
-# matches training token for token and saves generating the fixed tag.
-PREFILL_DIRECT = "<think>\n\n</think>\n\n<|action_start|>"
+# "<think>\n\n</think>\n\n" + action, so prefilling the fixed action tag
+# matches training and saves generating it -- but only up to its last
+# character: the tokenizer merges the tag's ">" with a negative X ("">-"",
+# one token), so a prefill ending in ">" makes moving left impossible.
+PREFILL_DIRECT = "<think>\n\n</think>\n\n<|action_start|"
 PREFILL_REASONING = "<think>"
 ACTION_END = "<|action_end|>"
 
