@@ -236,6 +236,8 @@ class GameScalingPolicy:
         self.last_prompt_tokens: int | None = None
         self.last_new_tokens: int | None = None
         self.last_reused: bool = False
+        self.sampled_logp: list[float] = []  # per sampled token, the last decision
+        self.sampled_tokens: list[int] = []
 
     @property
     def history(self):
@@ -316,12 +318,18 @@ class GameScalingPolicy:
         return out.logits[:, -1]
 
     def _sample(self, logits) -> int:
+        """Sample an index into logits; records its log-probability (at the
+        sampling temperature) in self.sampled_logp for PPO's ratio."""
         import torch
 
         if self.temperature > 0:
-            probs = (logits.float() / self.temperature).softmax(-1)
-            return int(torch.multinomial(probs, 1, generator=self.generator))
-        return int(logits.argmax(-1))
+            logp = (logits.float() / self.temperature).log_softmax(-1)
+            idx = int(torch.multinomial(logp.exp(), 1, generator=self.generator))
+        else:
+            logp = logits.float().log_softmax(-1)
+            idx = int(logits.argmax(-1))
+        self.sampled_logp.append(float(logp[idx]))
+        return idx
 
     def _decode_fast(self, logits) -> str:
         """As _decode, on the CUDA-graph decoder, sampling inside the action
@@ -332,6 +340,7 @@ class GameScalingPolicy:
         vocab = self.vocab
         logits = logits[0, dec.vocab_ids]
         made: list[int] = []
+        self.sampled_logp, self.sampled_tokens = [], made
         text = ""
         for _ in range(self.max_new_tokens):
             token = vocab[self._sample(logits)]
@@ -516,6 +525,7 @@ class StreamingPolicy(GameScalingPolicy):
         dec.load(self.cache, self.kv_len, self.next_pos - self.kv_len)
         logits = logits[dec.vocab_ids]
         made: list[int] = []
+        self.sampled_logp, self.sampled_tokens = [], made
         text = ""
         for _ in range(self.max_new_tokens):
             token = self.vocab[self._sample(logits)]

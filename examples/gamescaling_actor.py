@@ -215,6 +215,9 @@ def main():
                    "seconds": round(policy.last_seconds, 3), "prompt_tokens": policy.last_prompt_tokens,
                    "prefill_s": round(policy.last_prefill_s, 3), "decode_s": round(policy.last_decode_s, 3),
                    "reused": policy.last_reused, "frame_age": round(frame_age, 3)}
+            if getattr(policy, "sampled_tokens", None):
+                row["sampled"] = list(policy.sampled_tokens)
+                row["sampled_logp"] = [round(v, 5) for v in policy.sampled_logp]
             if applier is not None:
                 row["synced_updates"] = applier.applied_updates
             if energy is not None:

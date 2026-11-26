@@ -179,6 +179,50 @@ def restore_settings() -> None:
             shutil.copy2(src, dst)
 
 
+def _options(path: Path) -> dict:
+    out = {}
+    if path.exists():
+        for line in path.read_text(errors="replace").splitlines():
+            if ":" in line:
+                k, v = line.split(":", 1)
+                out[k] = v
+    return out
+
+
+def _content(path: Path) -> bytes:
+    """File content without '#' comment lines (configs stamp the save time there)."""
+    data = path.read_bytes()
+    return b"\n".join(l for l in data.splitlines() if not l.lstrip().startswith(b"#"))
+
+
+def settings_changes() -> dict:
+    """Evaluation only: what the agent changed in the game and mod settings,
+    against the settings template that every session starts from.
+    options: {key: [template, now]} for options.txt (language, keybinds,
+    video, ...); files: settings files added, removed or edited."""
+    if not SETTINGS_TEMPLATE.exists():
+        return {}
+    a, b = _options(SETTINGS_TEMPLATE / "options.txt"), _options(GAME / "options.txt")
+    options = {k: [a.get(k), b.get(k)] for k in sorted(set(a) | set(b)) if a.get(k) != b.get(k)}
+    files = []
+    for name in SETTINGS:
+        if name == "options.txt":
+            continue
+        t, g = SETTINGS_TEMPLATE / name, GAME / name
+        tf = {p.relative_to(t): p for p in t.rglob("*") if p.is_file()} if t.is_dir() else ({Path(""): t} if t.exists() else {})
+        gf = {p.relative_to(g): p for p in g.rglob("*") if p.is_file() and not _per_world(p)} if g.is_dir() else (
+            {Path(""): g} if g.exists() else {})
+        for rel in sorted(set(tf) | set(gf)):
+            label = str(Path(name) / rel) if str(rel) != "." and str(rel) else name
+            if rel not in gf:
+                files.append(["removed", label])
+            elif rel not in tf:
+                files.append(["added", label])
+            elif _content(tf[rel]) != _content(gf[rel]):
+                files.append(["edited", label])
+    return {"options_changed": options, "settings_files_changed": files}
+
+
 def set_options(values: dict) -> None:
     opt = GAME / "options.txt"
     lines = opt.read_text().splitlines()
@@ -234,6 +278,7 @@ def stats() -> dict:
         out["planks_crafted"] = out.get("planks_crafted", 0) + sum(v for k, v in crafted.items() if k.endswith("_planks"))
         out["crafting_tables_crafted"] = out.get("crafting_tables_crafted", 0) + crafted.get("minecraft:crafting_table", 0)
     out.update(player_state())
+    out.update(settings_changes())
     return out
 
 

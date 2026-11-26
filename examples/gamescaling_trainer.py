@@ -9,8 +9,10 @@ on another GPU (the P40). Each step:
    direct training of every other parameter (sili_quartz/continual.py), with
    energy at the actor's dose (sili_quartz/energy_scan.py);
 3. loss = - w_rep * I(past; future)          (representation term, gaussian_bc)
-          + w_pg * mean(-adv_t * log pi(a_t)) (behaviour term, REINFORCE with
-                                               the pointwise MI as reward)
+          + w_pg * PPO clipped surrogate        (behaviour term: per-token ratio
+                                               to the actor's sampling log-prob,
+                                               clipped to 1 +- eps; reward = the
+                                               pointwise MI, normalized)
           + lambda * relu(floor - PR) / floor (health; PR of the centre block)
           [+ the self-prediction loss for A1+self];
    log pi is over the actor's own restricted action vocabulary;
@@ -19,8 +21,10 @@ on another GPU (the P40). Each step:
 
 Arms (--arm): A1, A1-act, A1+self, A1-lam, A1+bored, A2, A3.
 Dose (--dose): dual (lambda, the default), fixed:<x>, none.
-The replay is recent play from slightly older weights; log pi is not
-importance-corrected (on-policy approximation).
+The replay is recent play from slightly older weights; the PPO ratio is
+taken against the log-prob the actor actually sampled with (logged per
+token), so the clip bounds how far each update moves from the policy that
+played.
 
     python examples/gamescaling_trainer.py --run ~/runs/a1_x --arm A1 --seconds 7200
 """
@@ -88,6 +92,7 @@ def main() -> None:
     ap.add_argument("--rank", type=int, default=8)
     ap.add_argument("--lr", type=float, default=5e-5, help="LoRA adapters")
     ap.add_argument("--clip", type=float, default=1.0, help="gradient norm clip")
+    ap.add_argument("--ppo-eps", type=float, default=0.2, help="PPO ratio clip")
     ap.add_argument("--checkpoint-every", type=float, default=1800.0, help="seconds between full checkpoints")
     ap.add_argument("--lr-direct", type=float, default=1e-5, help="norms, gates, biases, ...")
     ap.add_argument("--w-rep", type=float, default=1.0)
@@ -200,22 +205,36 @@ def main() -> None:
         # log pi of each turn's sampled action tokens, over the restricted vocabulary
         logits = out.logits[0]
         del out
-        lps = []
+        lps, tok_lp = [], []
         for t in turns:
             pos = torch.tensor(t["action"], device=a.device)
             tgt = vocab_index[ids[pos]]
             ok = tgt >= 0
             rows_ = torch.tensor([row_of[int(p) - 1] for p in t["action"]], device=a.device)
-            lp = torch.log_softmax(logits[rows_][:, vocab].float(), -1)
-            lps.append(lp[ok].gather(1, tgt[ok][:, None]).mean())  # per token
+            lp_all = torch.log_softmax(logits[rows_][:, vocab].float(), -1)
+            lp_tok = torch.where(ok, lp_all.gather(1, tgt.clamp(min=0)[:, None])[:, 0], torch.zeros_like(tgt, dtype=torch.float))
+            lps.append(lp_tok[ok].mean())
+            tok_lp.append(lp_tok)
         lps = torch.stack(lps)
         reward = res["reward"]
         r_mean = float(reward.mean()) if res["mi"] is not None else 0.0
+        matched = 0
         if res["mi"] is not None:
             adv_mean = 0.99 * adv_mean + 0.01 * r_mean
             adv_var = 0.99 * adv_var + 0.01 * float(((reward - adv_mean) ** 2).mean())
             adv = ((reward - adv_mean) / (adv_var ** 0.5 + 1e-6)).clamp(-3, 3)
-            loss_pg = -(adv * lps[:-1]).mean()
+            # PPO: per-token ratio against the log-prob the actor sampled with, on the
+            # tokens it actually sampled (the end tag after '<' is filled in, not sampled)
+            terms = []
+            for k, t in enumerate(turns[:-1]):
+                sampled, old = win[k].get("sampled"), win[k].get("sampled_logp")
+                if not sampled or ids[t["action"][:len(sampled)]].tolist() != sampled:
+                    continue
+                matched += 1
+                new_lp = tok_lp[k][:len(sampled)]
+                ratio = torch.exp(new_lp - torch.tensor(old, device=a.device))
+                terms.append(-torch.min(ratio * adv[k], ratio.clamp(1 - a.ppo_eps, 1 + a.ppo_eps) * adv[k]).mean())
+            loss_pg = torch.stack(terms).mean() if terms else torch.zeros((), device=a.device)
             loss_rep = -res["mi"]
         else:
             loss_pg = loss_rep = torch.zeros((), device=a.device)
@@ -254,7 +273,7 @@ def main() -> None:
         row = {"t": round(time.time(), 3), "step": step, "warm": warm, "decision_end": win[-1]["n"],
                "newest_decision": rows[-1]["n"], "mi": None if res["mi"] is None else round(float(res["mi"]), 4),
                "reward_mean": round(r_mean, 4), "logp_mean": round(float(lps.mean()), 3),
-               "loss_pg": round(float(loss_pg), 4), "pr": round(float(pr), 3), "floor": dual.floor,
+               "loss_pg": round(float(loss_pg), 4), "ppo_turns": matched, "pr": round(float(pr), 3), "floor": dual.floor,
                "lam": round(lam, 4), "dose": round(d, 4), "energy_changed": energy.changed_count() if d > 0 else 0,
                "grad_norm": round(grad_norm, 3), "tokens": int(ids.numel()), "seconds": round(time.time() - t0, 2), "synced": synced,
                "gpu_gib": round(torch.cuda.max_memory_allocated(a.device) / 2**30, 2)}

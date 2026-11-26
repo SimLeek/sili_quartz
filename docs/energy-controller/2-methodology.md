@@ -254,6 +254,27 @@ the single P40; staged, below).
      evaluation only and is never trained into the model. The Dreamer/
      Plan2Explore models stay separate (architecture 2).
 
+**Which arms combine (user, 2026-11-26: ask this after the screen).** The
+arms are not all alternatives. As built (`sili_quartz/actor_objective.py`,
+`examples/gamescaling_trainer.py`) they fall into three groups:
+- *The information term:* A1 (past = state + action), A1−act (state only),
+  A2 (action only), A3 (region A → region B). They can be summed, and two are
+  related exactly by the chain rule:
+  I([s, a]; s′) = I(s; s′) + I(a; s′ | s), i.e. A1 = A1−act + a conditional
+  empowerment term. A2 is the unconditional I(a; s′), so A1 and A2 overlap
+  but are not nested. A3 measures something else (between regions) and adds
+  to any of them.
+- *Add-ons, orthogonal to the term:* +self (a head predicting the agent's own
+  next action), and the two halves of the loss (representation and policy
+  gradient).
+- *The dose rule:* dual λ, fixed, or none, are mutually exclusive with each
+  other. A1−λ is "none". The boredom rule (+bored) adds to the dual rather
+  than replacing it, so dual + bored combine.
+
+So after the screen, survivors from different groups can be combined: for
+example, the best term + self + (dual + bored). A small factorial over the
+add-ons of the surviving terms is cheaper than screening every combination.
+
 **Staged protocol (user): one P40, so runs go one at a time.**
 1. **Screen.** One 2 h session per arm and baseline. That is 11 sessions,
    about 22 h. Any arm that shows one of the following is ruled out:
