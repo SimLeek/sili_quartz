@@ -162,6 +162,15 @@ itself, hears the game's audio, and acts only through keys and the mouse.
 - **Evaluation only:** Minecraft's per-player statistics file (distance,
   blocks mined, items), plus chunks visited if a mod is needed. None of it
   reaches the agent.
+- **Screen complexity (evaluation only, user 2026-11-26):** block stats miss
+  what the agent looks at -- it reads JEI item pages (visually rich) and opens
+  the same menu often (very regular). A 1 fps, 320x180 recording of the screen
+  is scored per minute by `tools/screen_complexity.py`:
+  - *spatial*: mean compressed size of a frame;
+  - *novelty*: extra bytes a minute's frames add when compressed after the
+    previous 10 minutes (lzma, long range), so revisiting a screen adds
+    almost nothing;
+  - *static*: share of frames nearly identical to the one before.
 - **Session length:** 2 hours (user).
 - **Stuck or collapsed: the compression check (user).**
   - Every 1–10 minutes, compress the agent's own action stream (the action
