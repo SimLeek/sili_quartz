@@ -57,8 +57,18 @@ cost multiples of P0c):
 | actions parsed | 24/24 | 24/24 | 24/24 | 24/24 | 24/24 | 6/24 | 0/15 |
 | changed entries per decision | 9.9k | 13k | 34k | 127k | 340k | 1.26M | — |
 
-Track A's dose unit is therefore 0.1 × P0c (`TRACK_A_COSTS`); the dual is
-capped at 2 units. Energy adds about 18 % per decision on the P40
+Actions alone hide damage (the restricted vocabulary still yields valid
+syntax), so the dose was re-checked on the model's free reasoning (thinking
+mode, 5-turn history, 5 frames × 3 samples):
+
+| dose × P0c | 0 | 0.01 | 0.02 | 0.03 | 0.05 | 0.1 |
+|---|---|---|---|---|---|---|
+| outputs with a valid action | 15/15 | 15/15 | 15/15 | 15/15 | 15/15 | 5/15 |
+| junk (non-ASCII) character share | 0 | 0 | 0 | 0 | 0.0009 | 0.0024 |
+
+At 0.1 × P0c the trainer's probe thoughts were word salad from the first
+step. Track A's dose unit is therefore **0.03 × P0c** (`TRACK_A_COSTS`), the
+largest fully clean dose; the dual is capped at 1.5 units. Energy adds about 18 % per decision on the P40
 (0.85 → 1.00 s at fp16).
 
 ## Not checked yet

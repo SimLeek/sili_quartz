@@ -644,3 +644,33 @@ class PipelinedExecutor(RobonetExecutor):
         self._stop.set()
         self._thread.join(timeout=1.0)
         self.release_all()
+
+
+def reasoning_probe(model, processor, system_prompt: str, frame, max_new_tokens: int = 384,
+                    temperature: float = 1.0, history=()) -> dict:
+    """Evaluation only: let the model think before acting on one frame (the
+    model card's reasoning mode, prefill "<think>"), to read what it attends
+    to. history: past (frame, action content) turns, as the actor keeps them.
+    Returns the thought, the action text after it, and whether it parsed."""
+    import torch
+
+    pol = GameScalingPolicy.__new__(GameScalingPolicy)
+    pol.system, pol.prefill, pol.history_len = system_prompt, PREFILL_REASONING, len(history)
+    pol.turns = list(history)
+    msgs = pol.messages(frame)
+    text = processor.apply_chat_template(msgs, tokenize=False, add_generation_prompt=False,
+                                         continue_final_message=True)
+    inputs = processor(text=[text], images=[f for f, _ in history] + [frame], return_tensors="pt").to(model.device)
+    was_training = model.training
+    model.eval()
+    try:
+        with torch.no_grad():
+            out = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=temperature > 0,
+                                 temperature=temperature if temperature > 0 else None, use_cache=True)
+    finally:
+        model.train(was_training)
+    completion = processor.tokenizer.decode(out[0, inputs["input_ids"].shape[1]:], skip_special_tokens=False)
+    thought, _, after = completion.partition("</think>")
+    action = parse_action(PREFILL_REASONING + completion)
+    return {"thought": thought.strip(), "after": after.strip()[:200], "parsed": action.parsed,
+            "finished_thinking": "</think>" in completion, "tokens": int(out.shape[1] - inputs["input_ids"].shape[1])}

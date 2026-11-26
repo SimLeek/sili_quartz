@@ -24,7 +24,7 @@ the policy-gradient term.
 Health: the participation ratio (PR) of the centre-block states over the
 window's tokens. Floor = 0.8 x its value over the first steps. The dual
 lambda <- max(0, lambda + eta * (floor - PR) / floor) is the energy dose
-(1 = TRACK_A_COSTS, 0.1 x the P0c text dose; capped at 2) and weights the health penalty in the loss.
+(1 = TRACK_A_COSTS, 0.03 x the P0c text dose; capped at 1.5) and weights the health penalty in the loss.
 """
 
 from __future__ import annotations
@@ -40,10 +40,11 @@ from sili_quartz.energy_scan import ScanEnergy, ScanSite
 # --- energy sites (same as the P0c runs: MLP activation and attention output per layer) ---
 
 P0C_COSTS = (0.03, 0.01)
-# Track A's dose unit: 0.1 x P0c. Measured on the fp16 actor (CUDA-graph decoder,
-# 24 replayed frames): every action still parses at 0.1 x P0c, 6/24 at 0.3 x,
-# none at 1 x (the text-calibrated dose wrecks the action syntax).
-TRACK_A_COSTS = (0.003, 0.001)
+# Track A's dose unit: 0.03 x P0c, the largest dose at which the model's free
+# reasoning (thinking mode, 5-turn history) stays clean: no junk characters and
+# every action parses at <= 0.03 x; first junk at 0.05 x; 5/15 parse at 0.1 x.
+# Actions alone (restricted vocabulary) still parse at 0.1 x, which hid the damage.
+TRACK_A_COSTS = (0.0009, 0.0003)
 DECAY_DIV = 40.0
 
 
@@ -211,7 +212,7 @@ def participation_ratio(h: Tensor) -> Tensor:
 class Dual:
     """lambda <- max(0, lambda + eta * (floor - health) / floor); floor = frac x early health."""
 
-    def __init__(self, frac: float = 0.8, eta: float = 0.05, warmup: int = 20, lam_max: float = 2.0,
+    def __init__(self, frac: float = 0.8, eta: float = 0.05, warmup: int = 20, lam_max: float = 1.5,
                  enabled: bool = True):
         self.frac, self.eta, self.warmup, self.lam_max, self.enabled = frac, eta, warmup, lam_max, enabled
         self.early: list[float] = []
@@ -232,7 +233,7 @@ class Dual:
 class Boredom:
     """A1+bored: raise the dose while the short-run information gain is below its long-run average."""
 
-    def __init__(self, short: float = 0.1, long: float = 0.01, step: float = 0.05, lam_max: float = 2.0):
+    def __init__(self, short: float = 0.1, long: float = 0.01, step: float = 0.05, lam_max: float = 1.5):
         self.short = self.long = None
         self.a_s, self.a_l, self.step, self.lam_max = short, long, step, lam_max
         self.extra = 0.0

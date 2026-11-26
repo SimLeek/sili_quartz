@@ -49,6 +49,7 @@ from sili_quartz.continual import (
 )
 from sili_quartz.gamescaling import (
     ACTION_END, MINECRAFT_KEYS, MINECRAFT_RULES, NOOP_TEXT, USER_TEXT, action_vocab, build_system_prompt,
+    reasoning_probe,
 )
 
 CENTRE, REGION_A, REGION_B = 13, 7, 19  # hidden_states index = layer index + 1
@@ -102,6 +103,9 @@ def main() -> None:
     ap.add_argument("--seconds", type=float, default=0.0)
     ap.add_argument("--steps", type=int, default=0)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--probe-every", type=float, default=300.0,
+                    help="seconds between reasoning probes of the trained weights (0 = off)")
+    ap.add_argument("--probe-samples", type=int, default=6)
     a = ap.parse_args()
 
     from transformers import AutoProcessor, Qwen3_5ForConditionalGeneration
@@ -171,10 +175,32 @@ def main() -> None:
     energy = make_energy(model, mlp_means, attn_means)
     adv_mean, adv_var, step, t_start = 0.0, 1.0, 0, time.time()
     last_ckpt = t_start
+    last_probe = 0.0
+
+    def probe() -> None:
+        """What the model being trained thinks on the newest frame (evaluation only;
+        RUN/probes.jsonl). No history: with past turns the model copies their empty
+        thinking blocks and almost never thinks."""
+        rows_ = read_rows(run / "actor.jsonl", replay)[-6:]
+        if len(rows_) < 6:
+            return
+        hist = [(Image.open(replay / f"{r['n']:06d}.jpg").convert("RGB"), assistant_content(r)) for r in rows_[:-1]]
+        frame = Image.open(replay / f"{rows_[-1]['n']:06d}.jpg").convert("RGB")
+        d0 = dose_now()
+        energy.enabled = d0 > 0
+        energy.set_dose(cost_scale=d0, noise_scale=d0)
+        for k in range(a.probe_samples):
+            res = reasoning_probe(model, proc, system, frame)
+            with open(run / "probes.jsonl", "a") as fh:
+                fh.write(json.dumps({"t": round(time.time(), 1), "step": step, "decision": rows_[-1]["n"],
+                                     "sample": k, "dose": d0, **res}) + "\n")
     print(json.dumps({"arm": a.arm, "dose": a.dose, "lora_params": sum(p.numel() for p in lora.parameters()),
                       "direct_params": sum(p.numel() for p in direct.values())}), flush=True)
 
     while (not a.seconds or time.time() - t_start < a.seconds) and (not a.steps or step < a.steps):
+        if a.probe_every and time.time() - last_probe > a.probe_every:
+            last_probe = time.time()
+            probe()
         t0 = time.time()
         rows = read_rows(run / "actor.jsonl", replay)
         recent = rows[-a.recent:]
