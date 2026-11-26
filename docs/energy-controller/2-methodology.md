@@ -333,9 +333,9 @@ the user can do (account, internet window, review).
 
 | Step | Owner | What | Done when |
 |---|---|---|---|
-| P.1 | me | **Effect meter**: KL(p_energy ‖ p_clean) on a sampled subset of steps, with a clean pass sharing the same cache | unit tests: KL is 0 with energy off; rises with cost; time per call logged |
-| P.2 | me | **Surprise meter** (running −log p of own output) and **learning-progress meter** (short- and long-window drop in loss) | unit tests on synthetic streams |
-| P.3 | me | **Controllers**: P1, P1a, P1b, P2, P2a, P2+A, and the ×R/D variants, each a small class that reads the meters and sets energy's cost, noise and drive | unit tests: two-sided (moves up when bored, down when confused), bounded, no NaN; P2 re-melts when learning progress goes flat |
+| P.1 | me | **Effect meter**: KL(p_energy ‖ p_clean) on a sampled subset of steps, with a clean pass sharing the same cache | **done** (`sili_quartz/controllers.py`, `NeuronEnergy.disabled()`/`set_dose()`): KL is 0 with energy off, rises with cost, clean-pass time logged |
+| P.2 | me | **Surprise meter** (running −log p of own output) and **learning-progress meter** (short- and long-window drop in loss) | **done**: progress is in noise units (noise from first differences, so a trend is not noise) |
+| P.3 | me | **Controllers**: P1, P1a, P1b, P2, P2a, P2+A, and the ×R/D variants, each a small class that reads the meters and sets energy's cost, noise and drive | **done**: two-sided, bounded, NaN-safe; P2 lowers δ while the loss falls and re-melts on a floor. Engagement's short-term utility is taken *relative to the long-term trend* (read literally, steady progress would read as disengaged), and the neutral engagement is its value at 2 noise units of long-term progress (≈0.44), so a loss floor (0.25) re-melts |
 | P.4 | me | **Mirostat baseline** (P0b), from the paper's algorithm 1 | test: observed surprise tracks τ on GameScaling's text head |
 | P.5 | me | **Loop-test harness**: promote `loop_vs_temperature.py` into `examples/` with all P-1 arms | smoke run of every arm |
 | P.6 | me | **Run P-1** (about 2–4 h; one run per arm) | results doc |
