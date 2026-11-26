@@ -15,6 +15,11 @@ the chunk ends; reaction time (frame -> first step of its chunk) and the
 interval between chunks go to LOG.timing.jsonl. One JSON line per decision
 in LOG: the raw completion, whether it parsed, seconds, prompt tokens.
 Ctrl+C (or --decisions / --seconds) releases every key and hands control back.
+
+--random-from LOG is the A-0 random-policy baseline: no model; each decision
+is an action drawn uniformly (seeded) from a previous run's LOG, after a
+compute time drawn from the same LOG, so keys, mouse and cadence match that
+run but ignore the screen.
 """
 
 from __future__ import annotations
@@ -32,8 +37,27 @@ from PIL import Image
 
 from sili_quartz.gamescaling import (
     MINECRAFT_KEYS, MINECRAFT_RULES, GameScalingPolicy, PipelinedExecutor, RobonetExecutor, StreamingPolicy,
-    build_system_prompt,
+    build_system_prompt, parse_action,
 )
+
+
+class ReplayRandomPolicy:
+    """Random baseline: actions and compute times drawn independently from a logged run."""
+
+    def __init__(self, log: Path, seed: int):
+        rows = [json.loads(line) for line in open(log)]
+        self.texts = [r["text"] for r in rows if r.get("parsed")]
+        self.seconds = [r["seconds"] for r in rows[10:]]  # skip warm-up
+        self.rng = np.random.default_rng(seed)
+        self.last_seconds = self.last_prefill_s = self.last_decode_s = 0.0
+        self.last_prompt_tokens, self.last_reused = 0, False
+
+    def act(self, frame):
+        t0 = time.perf_counter()
+        text = self.texts[self.rng.integers(len(self.texts))]
+        time.sleep(max(0.0, self.seconds[self.rng.integers(len(self.seconds))] - (time.perf_counter() - t0)))
+        self.last_seconds = time.perf_counter() - t0
+        return parse_action(text), text
 
 
 def load_policy(model_dir: str, device: str, dtype: torch.dtype, history: int, temperature: float,
@@ -100,10 +124,15 @@ def main():
     ap.add_argument("--slow", action="store_true",
                     help="the model card's setup: re-read the last 5 turns every call, transformers decode")
     ap.add_argument("--no-pipeline", action="store_true", help="compute, then execute, in turn")
+    ap.add_argument("--random-from", type=Path, default=None, help="random baseline: replay draws from this LOG")
+    ap.add_argument("--seed", type=int, default=0, help="seed for --random-from")
     a = ap.parse_args()
 
-    policy = load_policy(a.model, a.device, getattr(torch, a.dtype), a.history, a.temperature,
-                         fast=not a.slow, session_turns=0 if a.slow else 30)
+    if a.random_from:
+        policy = ReplayRandomPolicy(a.random_from, a.seed)
+    else:
+        policy = load_policy(a.model, a.device, getattr(torch, a.dtype), a.history, a.temperature,
+                             fast=not a.slow, session_turns=0 if a.slow else 30)
     client = make_client()
     if not client.connect(timeout_s=30):
         raise SystemExit("robonet bridge not reachable")
