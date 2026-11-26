@@ -119,3 +119,19 @@ def test_executor_presses_on_change_and_splits_the_mouse_move_over_six_steps():
     assert moves == [("move", 0.51, 0.495)] * 6  # 60/1000/6 right, 30/1000/6 up, from the centre
     ex.release_all()
     assert c.calls[-1] == ("key", "ctrlleft", False)
+
+
+def test_action_vocab_covers_every_token_of_valid_actions():
+    tok_dir = MODEL_DIR / "tokenizer.json"
+    if not tok_dir.exists():
+        pytest.skip(f"no tokenizer at {MODEL_DIR}")
+    from transformers import AutoTokenizer
+
+    from sili_quartz.gamescaling import action_vocab
+
+    tok = AutoTokenizer.from_pretrained(MODEL_DIR)
+    vocab = set(action_vocab(tok))
+    for text in ("-37 -3 0 ; LB S ; LB ; LB ; LB ; LB ; LB<|action_end|>",
+                 "1000 -1000 5 ; W A S D ; Space Ctrl ; ; ; ; nine<|action_end|>",
+                 "0 0 0 ;  ;  ;  ;  ;  ; <|action_end|>"):
+        assert set(tok.encode(text, add_special_tokens=False)) <= vocab, text

@@ -159,72 +159,247 @@ def parse_action(response: str) -> Action:
     return Action((x, y, z), steps, True, False, dropped, text)
 
 
+def action_vocab(tokenizer, samples: int = 4000, seed: int = 0) -> list[int]:
+    """Token ids that valid action text uses, from tokenizing many random
+    valid actions (numbers, key groups, single and double spaces) plus the end
+    tag and end of turn. Decoding restricted to these is sampling from the
+    model's distribution conditioned on staying in the action format."""
+    import random
+
+    rng = random.Random(seed)
+    keys = sorted(KEY_VOCAB)
+    ids: set[int] = set()
+    for i in range(samples):
+        x, y = rng.randint(-1000, 1000), rng.randint(-1000, 1000)
+        z = rng.choice([0, 0, 0, rng.randint(-5, 5)])
+        groups = [" ".join(rng.sample(keys, rng.randint(0, 4))) for _ in range(STEPS)]
+        sep = rng.choice([" ; ", " ;  ", ";", " ;"])
+        text = f"{x} {y} {z}{sep}" + sep.join(groups) + ACTION_END
+        ids.update(tokenizer.encode(text, add_special_tokens=False))
+    for t in (ACTION_END, "<|im_end|>"):
+        ids.update(tokenizer.encode(t, add_special_tokens=False))
+    if tokenizer.eos_token_id is not None:
+        ids.add(tokenizer.eos_token_id)
+    return sorted(ids)
+
+
 # -- policy (model card section 4) --------------------------------------------------------
 
 USER_TEXT = "current game screen"
-PREFILL_DIRECT = "<think>\n\n</think>"
+# The chat template renders a past turn without reasoning as
+# "<think>\n\n</think>\n\n" + action, so prefilling up to the action tag
+# matches training token for token and saves generating the fixed tag.
+PREFILL_DIRECT = "<think>\n\n</think>\n\n<|action_start|>"
 PREFILL_REASONING = "<think>"
+ACTION_END = "<|action_end|>"
 
 
 class GameScalingPolicy:
     """Multi-turn: system; (user frame, assistant action) x history; user frame;
     assistant prefill. Past turns keep only the action. Needs a
     Qwen3_5ForConditionalGeneration and its processor (the checkpoint's own
-    chat template)."""
+    chat template).
+
+    session_turns > 0 keeps the KV cache across decisions: each turn only the
+    new user turn (one frame) is run through the model, at the positions it
+    has in the full conversation. The conversation then grows past
+    history_len; after session_turns decisions (or whenever the cache no
+    longer matches the rendered conversation) it starts over from the last
+    history_len turns. session_turns = 0: every call re-reads the last
+    history_len turns (the model card's setup).
+    """
 
     def __init__(self, model, processor, system_prompt: str, history_len: int = 5,
                  reasoning: bool = False, temperature: float = 1.0, max_new_tokens: int | None = None,
-                 generator=None):
+                 session_turns: int = 0, generator=None, fast_decode: bool = False, max_len: int = 16384):
         self.model, self.processor, self.system = model, processor, system_prompt
-        self.history: deque = deque(maxlen=history_len)
+        self.history_len = history_len
+        self.turns: list = []  # (frame, assistant content) for the current session
         self.prefill = PREFILL_REASONING if reasoning else PREFILL_DIRECT
         self.temperature = temperature
-        self.max_new_tokens = max_new_tokens or (2048 if reasoning else 96)
-        tok = processor.tokenizer
-        # In the 0.8B-S3 tokenizer the action tags are plain text (several
-        # tokens each), not special tokens, so generation stops on the string.
-        end_id = tok.convert_tokens_to_ids("<|action_end|>")
-        self.stop_ids = [i for i in (end_id, tok.eos_token_id) if isinstance(i, int)]
-        self.stop_strings = ["<|action_end|>"]
+        self.max_new_tokens = max_new_tokens or (2048 if reasoning else 64)
+        self.session_turns = session_turns
+        self.generator = generator
+        self.tok = processor.tokenizer
+        self.decoder = None
+        if fast_decode:
+            from sili_quartz.fast_decode import GraphDecoder
+
+            self.vocab = action_vocab(self.tok)
+            self.decoder = GraphDecoder(model, max_len=max_len, vocab_ids=self.vocab)
+        self._reset_session()
         self.last_seconds: float | None = None
         self.last_prompt_tokens: int | None = None
+        self.last_new_tokens: int | None = None
+        self.last_reused: bool = False
+
+    @property
+    def history(self):
+        return self.turns[-self.history_len:] if self.history_len else []
 
     def reset(self) -> None:
-        self.history.clear()
+        self.turns.clear()
+        self._reset_session()
 
-    def messages(self, frame) -> list[dict]:
+    def _reset_session(self) -> None:
+        self.cache = None
+        self.cache_text = ""  # the conversation text the cache holds
+        self.cache_ids: list[int] = []
+        self.grids: list = []  # image_grid_thw rows of the images in the cache
+        self.mm_types: list[int] = []
+        self.session_count = 0
+
+    def messages(self, frame, turns=None) -> list[dict]:
+        turns = self.history if turns is None else turns
         msgs = [{"role": "system", "content": [{"type": "text", "text": self.system}]}]
-        for past_frame, action_text in self.history:
+        for past_frame, content in turns:
             msgs.append({"role": "user", "content": [{"type": "text", "text": USER_TEXT},
                                                      {"type": "image", "image": past_frame}]})
-            msgs.append({"role": "assistant", "content": [{"type": "text", "text": action_text}]})
+            msgs.append({"role": "assistant", "content": [{"type": "text", "text": content}]})
         msgs.append({"role": "user", "content": [{"type": "text", "text": USER_TEXT},
                                                  {"type": "image", "image": frame}]})
         msgs.append({"role": "assistant", "content": [{"type": "text", "text": self.prefill}]})
         return msgs
+
+    def _render(self, msgs) -> str:
+        return self.processor.apply_chat_template(msgs, tokenize=False, add_generation_prompt=False,
+                                                  continue_final_message=True)
+
+    def _positions(self, ids: list[int]):
+        """M-RoPE positions (3, 1, L) for the whole conversation, and its delta."""
+        import torch
+
+        dev = self.model.device
+        return self.model.model.get_rope_index(
+            torch.tensor([ids], device=dev),
+            mm_token_type_ids=torch.tensor([self.mm_types], device=dev),
+            image_grid_thw=torch.cat(self.grids).to(dev),
+        )
+
+    def _prefill(self, frame) -> tuple:
+        """Feed the model whatever the cache lacks. Returns the last logits."""
+        import torch
+
+        session_turns = self.turns if self.session_turns else self.history
+        full_text = self._render(self.messages(frame, session_turns))
+        reuse = (self.session_turns and self.cache is not None and self.session_count < self.session_turns
+                 and full_text.startswith(self.cache_text))
+        if not reuse:
+            self._reset_session()
+            session_turns = self.history
+            full_text = self._render(self.messages(frame, session_turns))
+            frames = [f for f, _ in session_turns] + [frame]
+            suffix_text = full_text
+        else:
+            frames = [frame]
+            suffix_text = full_text[len(self.cache_text):]
+        inputs = self.processor(text=[suffix_text], images=frames, return_tensors="pt").to(self.model.device)
+        new_ids = inputs["input_ids"][0].tolist()
+        start = len(self.cache_ids)
+        self.cache_ids += new_ids
+        self.mm_types += inputs["mm_token_type_ids"][0].tolist()
+        self.grids.append(inputs["image_grid_thw"].cpu())
+        positions, self.rope_delta = self._positions(self.cache_ids)
+        out = self.model(
+            input_ids=inputs["input_ids"], pixel_values=inputs["pixel_values"],
+            image_grid_thw=inputs["image_grid_thw"], mm_token_type_ids=inputs["mm_token_type_ids"],
+            position_ids=positions[:, :, start:], past_key_values=self.cache, use_cache=True,
+        )
+        self.cache = out.past_key_values
+        self.cache_text = full_text
+        self.last_reused, self.last_new_tokens = bool(reuse), len(new_ids)
+        self.last_prompt_tokens = len(self.cache_ids)
+        return out.logits[:, -1]
+
+    def _sample(self, logits) -> int:
+        import torch
+
+        if self.temperature > 0:
+            probs = (logits.float() / self.temperature).softmax(-1)
+            return int(torch.multinomial(probs, 1, generator=self.generator))
+        return int(logits.argmax(-1))
+
+    def _decode_fast(self, logits) -> str:
+        """As _decode, on the CUDA-graph decoder, sampling inside the action
+        vocabulary, and stopping at the '<' that starts the end tag (the rest
+        of the tag reaches the cache with the next prefill)."""
+        dec = self.decoder
+        dec.load(self.cache, len(self.cache_ids), int(self.rope_delta.flatten()[0]))
+        vocab = self.vocab
+        logits = logits[0, dec.vocab_ids]
+        made: list[int] = []
+        text = ""
+        for _ in range(self.max_new_tokens):
+            token = vocab[self._sample(logits)]
+            made.append(token)
+            text = self.tok.decode(made, skip_special_tokens=False)
+            if token == self.tok.eos_token_id or ACTION_END in text or (
+                    text.count(";") >= STEPS and "<" in text.rsplit(";", 1)[-1]):
+                break
+            self.cache_ids.append(token)
+            self.mm_types.append(0)
+            logits = dec.step(token)[0]
+        dec.store(self.cache)
+        # the final token is not in the cache: keep the text the cache holds
+        held = self.tok.decode(made[:-1], skip_special_tokens=False)
+        if ACTION_END not in text and ";" in text:
+            text = text[: text.rfind("<")] + ACTION_END if "<" in text.rsplit(";", 1)[-1] else text
+        self.cache_text += held
+        return text
+
+    def _decode(self, logits) -> str:
+        """Sample until the action's end tag (or the token budget)."""
+        import torch
+
+        if self.decoder is not None:
+            return self._decode_fast(logits)
+        dev = self.model.device
+        made: list[int] = []
+        text = ""
+        for _ in range(self.max_new_tokens):
+            if self.temperature > 0:
+                probs = (logits.float() / self.temperature).softmax(-1)
+                token = int(torch.multinomial(probs, 1, generator=self.generator))
+            else:
+                token = int(logits.argmax(-1))
+            made.append(token)
+            self.cache_ids.append(token)
+            self.mm_types.append(0)
+            text = self.tok.decode(made, skip_special_tokens=False)
+            if ACTION_END in text or token == self.tok.eos_token_id:
+                break
+            pos = torch.full((3, 1, 1), len(self.cache_ids) - 1, device=dev) + self.rope_delta.to(dev)
+            out = self.model(input_ids=torch.tensor([[token]], device=dev), position_ids=pos,
+                             past_key_values=self.cache, use_cache=True)
+            self.cache, logits = out.past_key_values, out.logits[:, -1]
+        self.cache_text += text
+        return text
 
     def act(self, frame) -> tuple[Action, str]:
         """frame: a PIL image. Returns (action, raw completion)."""
         import torch
 
         t0 = time.perf_counter()
-        inputs = self.processor.apply_chat_template(
-            self.messages(frame), tokenize=True, return_dict=True, return_tensors="pt",
-            add_generation_prompt=False, continue_final_message=True,
-        ).to(self.model.device)
-        self.last_prompt_tokens = int(inputs["input_ids"].shape[1])
         with torch.no_grad():
-            out = self.model.generate(
-                **inputs, max_new_tokens=self.max_new_tokens, do_sample=self.temperature > 0,
-                temperature=self.temperature if self.temperature > 0 else None,
-                eos_token_id=self.stop_ids, stop_strings=self.stop_strings,
-                tokenizer=self.processor.tokenizer,
-            )
-        completion = self.processor.tokenizer.decode(out[0, inputs["input_ids"].shape[1]:], skip_special_tokens=False)
-        if "<|action_end|>" not in completion and "<|action_start|>" in completion:
-            completion += "<|action_end|>"  # generate() stops on the token but may drop it on decode
+            logits = self._prefill(frame)
+            if self.model.device.type == "cuda":
+                torch.cuda.synchronize(self.model.device)
+            t1 = time.perf_counter()
+            n_before = len(self.cache_ids)
+            completion = self._decode(logits)
+        self.last_prefill_s, self.last_decode_s = t1 - t0, time.perf_counter() - t1
+        self.last_generated = len(self.cache_ids) - n_before + 1
         action = parse_action(self.prefill + completion)
-        self.history.append((frame, action.text))
+        # Past turns render as "<think>\n\n</think>\n\n" + content: keep what was
+        # generated (so the cache still matches) when it parsed, else a no-op.
+        if action.parsed and completion.rstrip().endswith(ACTION_END):
+            content = self.prefill.split("</think>\n\n", 1)[-1] + completion
+        else:
+            content = NOOP_TEXT
+        self.turns.append((frame, content))
+        self.session_count += 1
+        if not self.session_turns:
+            self.turns = self.turns[-self.history_len:]
         self.last_seconds = time.perf_counter() - t0
         return action, completion
 
