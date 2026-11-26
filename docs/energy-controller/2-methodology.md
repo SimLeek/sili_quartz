@@ -338,7 +338,7 @@ the user can do (account, internet window, review).
 | P.3 | me | **Controllers**: P1, P1a, P1b, P2, P2a, P2+A, and the ×R/D variants, each a small class that reads the meters and sets energy's cost, noise and drive | **done**: two-sided, bounded, NaN-safe; P2 lowers δ while the loss falls and re-melts on a floor. Engagement's short-term utility is taken *relative to the long-term trend* (read literally, steady progress would read as disengaged), and the neutral engagement is its value at 2 noise units of long-term progress (≈0.44), so a loss floor (0.25) re-melts |
 | P.4 | me | **Mirostat baseline** (P0b), from the paper's algorithm 1 | test: observed surprise tracks τ on GameScaling's text head |
 | P.5 | me | **Loop-test harness**: promote `loop_vs_temperature.py` into `examples/` with all P-1 arms | **done** (`examples/loop_test.py`): smoke run on the P40; δ₀ = P0c's own effect KL (1.82 nats/token), τ = the model's surprise on train text (3.92 nats); 0.9 s/token with energy on |
-| P.6 | me | **Run P-1** (about 2–4 h; one run per arm) | results doc |
+| P.6 | me | **Run P-1** (about 2–4 h; one run per arm) | **done** (885 s): [results](../results/2026-11-26-p1-loop-test.md) |
 | P.7 | me | **Collapse loop**: wire the controllers into `model_collapse.py`; add free-running samples *during* each generation's training; then run P-2 (5 arms × 4 seeds × 10 generations, about 15–20 h) | 1-generation smoke, then the results doc |
 
 ### Track A: Minecraft setup
