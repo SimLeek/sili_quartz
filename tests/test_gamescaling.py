@@ -93,17 +93,18 @@ class _FakeClient:
     def send_key(self, key, pressed):
         self.calls.append(("key", key, pressed))
 
-    def send_mouse_button(self, button, pressed):
+    def send_mouse_button(self, button, pressed, at_current=False):
+        assert at_current  # clicks land where the pointer is; nothing re-anchors it
         self.calls.append(("button", button, pressed))
 
-    def send_mouse_move(self, x, y):
-        self.calls.append(("move", round(x, 4), round(y, 4)))
+    def send_mouse_move_rel(self, dx, dy):
+        self.calls.append(("move", round(dx, 4), round(dy, 4)))
 
     def send_scroll(self, delta):
         self.calls.append(("scroll", delta))
 
 
-def test_executor_presses_on_change_and_splits_the_mouse_move_over_six_steps():
+def test_executor_presses_on_change_and_moves_the_mouse_relatively_over_six_steps():
     c = _FakeClient()
     ex = RobonetExecutor(c, step_s=0.0)
     ex.execute(parse_action("<|action_start|>60 -30 0 ; W ; W LB ; LB ; ; ; Ctrl<|action_end|>"))
@@ -116,7 +117,7 @@ def test_executor_presses_on_change_and_splits_the_mouse_move_over_six_steps():
         ("key", "ctrlleft", True),
     ]
     moves = [x for x in c.calls if x[0] == "move"]
-    assert moves == [("move", 0.51, 0.495)] * 6  # 60/1000/6 right, 30/1000/6 up, from the centre
+    assert moves == [("move", 0.01, -0.005)] * 6  # by 60/1000/6 right and 30/1000/6 up, each step
     ex.release_all()
     assert c.calls[-1] == ("key", "ctrlleft", False)
 

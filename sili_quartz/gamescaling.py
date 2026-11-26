@@ -549,8 +549,10 @@ def torch_cat_keep(x, head: int, tail: int):
 class RobonetExecutor:
     """Plays an Action through a robonet RobonetAIClient: 6 steps of 33 ms,
     keys pressed/released on change, the chunk's mouse movement split evenly
-    over the steps. Mouse moves are offsets from the screen centre (the game
-    re-centres the pointer; Minecraft needs rawMouseInput:false). The frame
+    over the steps as relative moves (the pointer moves *by* that much), and
+    clicks where the pointer is. In-game Minecraft re-centres the pointer and
+    reads each move as camera rotation (needs rawMouseInput:false); on menus
+    the moves add up and move the cursor, as with a real mouse. The frame
     must be the screen with no letterbox (brain ai_res 16:9)."""
 
     def __init__(self, client, step_s: float = 1.0 / 30.0):
@@ -567,7 +569,7 @@ class RobonetExecutor:
 
     def _send(self, token: str, pressed: bool) -> None:
         if token in MOUSE_BUTTONS:
-            self.client.send_mouse_button(MOUSE_BUTTONS[token], pressed)
+            self.client.send_mouse_button(MOUSE_BUTTONS[token], pressed, at_current=True)
         else:
             self.client.send_key(TO_ROBONET[token], pressed)
 
@@ -580,7 +582,7 @@ class RobonetExecutor:
             t0 = time.perf_counter()
             self._set_held(keys)
             if dx or dy:
-                self.client.send_mouse_move(0.5 + dx, 0.5 + dy)
+                self.client.send_mouse_move_rel(dx, dy)
             time.sleep(max(0.0, self.step_s - (time.perf_counter() - t0)))
 
     def release_all(self) -> None:
