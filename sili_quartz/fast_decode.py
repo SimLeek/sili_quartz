@@ -217,6 +217,14 @@ class GraphDecoder:
         self.length += 1
         return self.logits
 
+    def reset_graphs(self) -> None:
+        """Drop the captured graphs (and their memory pool) so the next steps
+        recapture, e.g. after attn_post or the step's hooks change."""
+        torch.cuda.synchronize(self.dev)
+        self.graphs = {}
+        self.logits = None
+        self.pool = None
+
     def _capture(self) -> None:
         # warm up on a side stream (required before capture), then restore the state
         saved = ({i: c.clone() for i, c in self.conv.items()}, {i: r.clone() for i, r in self.rec.items()},

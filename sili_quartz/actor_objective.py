@@ -24,7 +24,7 @@ the policy-gradient term.
 Health: the participation ratio (PR) of the centre-block states over the
 window's tokens. Floor = 0.8 x its value over the first steps. The dual
 lambda <- max(0, lambda + eta * (floor - PR) / floor) is the energy dose
-(1 = the P0c fixed dose) and weights the health penalty in the loss.
+(1 = TRACK_A_COSTS, 0.1 x the P0c text dose; capped at 2) and weights the health penalty in the loss.
 """
 
 from __future__ import annotations
@@ -40,6 +40,10 @@ from sili_quartz.energy_scan import ScanEnergy, ScanSite
 # --- energy sites (same as the P0c runs: MLP activation and attention output per layer) ---
 
 P0C_COSTS = (0.03, 0.01)
+# Track A's dose unit: 0.1 x P0c. Measured on the fp16 actor (CUDA-graph decoder,
+# 24 replayed frames): every action still parses at 0.1 x P0c, 6/24 at 0.3 x,
+# none at 1 x (the text-calibrated dose wrecks the action syntax).
+TRACK_A_COSTS = (0.003, 0.001)
 DECAY_DIV = 40.0
 
 
@@ -57,7 +61,7 @@ def measure_site_means(model, run) -> tuple[list[float], list[float]]:
     return means[: len(mlp)], means[len(mlp):]
 
 
-def make_energy(model, mlp_means, attn_means, costs=P0C_COSTS, decay_div=DECAY_DIV) -> ScanEnergy:
+def make_energy(model, mlp_means, attn_means, costs=TRACK_A_COSTS, decay_div=DECAY_DIV) -> ScanEnergy:
     """Every site is scaled to its layer's MLP activations, so a cost is the same dose everywhere."""
     mlp, attn = site_modules(model)
     sites = [ScanSite(m, ref, 1.0, costs[0]) for m, ref in zip(mlp, mlp_means)]
@@ -207,7 +211,7 @@ def participation_ratio(h: Tensor) -> Tensor:
 class Dual:
     """lambda <- max(0, lambda + eta * (floor - health) / floor); floor = frac x early health."""
 
-    def __init__(self, frac: float = 0.8, eta: float = 0.05, warmup: int = 20, lam_max: float = 4.0,
+    def __init__(self, frac: float = 0.8, eta: float = 0.05, warmup: int = 20, lam_max: float = 2.0,
                  enabled: bool = True):
         self.frac, self.eta, self.warmup, self.lam_max, self.enabled = frac, eta, warmup, lam_max, enabled
         self.early: list[float] = []
@@ -228,7 +232,7 @@ class Dual:
 class Boredom:
     """A1+bored: raise the dose while the short-run information gain is below its long-run average."""
 
-    def __init__(self, short: float = 0.1, long: float = 0.01, step: float = 0.05, lam_max: float = 4.0):
+    def __init__(self, short: float = 0.1, long: float = 0.01, step: float = 0.05, lam_max: float = 2.0):
         self.short = self.long = None
         self.a_s, self.a_l, self.step, self.lam_max = short, long, step, lam_max
         self.extra = 0.0
