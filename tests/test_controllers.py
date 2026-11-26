@@ -223,6 +223,13 @@ def test_p2_plus_a_rate_rises_with_a_surprise_burst():
     assert max(rates[400:]) > 2 * (sum(rates[300:400]) / 100)
 
 
+@pytest.mark.parametrize("name", ["P1", "P1a", "P1b", "P2", "P2a", "P2+A"])
+def test_every_arm_builds_from_one_shared_set_of_settings(name):
+    c = make_controller(name, "noise", delta=0.5, eta=1e-3, tau=3.0)
+    assert c.knob == "noise"
+    assert getattr(c, "delta", 0.5) == 0.5
+
+
 def test_unknown_controller_or_knob_is_an_error():
     with pytest.raises(ValueError):
         make_controller("P9")

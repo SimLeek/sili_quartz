@@ -289,7 +289,15 @@ class P2(EffectTarget):
 
 
 def make_controller(name: str, knob: str = "cost", **kw) -> Controller:
-    """P1, P1a, P1b, P2, P2a, P2+A; knob 'cost' | 'noise' | 'drive'."""
+    """P1, P1a, P1b, P2, P2a, P2+A; knob 'cost' | 'noise' | 'drive'.
+    Keyword arguments a controller doesn't have (e.g. eta for P1a) are
+    ignored, so one set of settings can build every arm."""
+    from dataclasses import fields
+
+    classes = {"P1": P1, "P1a": EffectTarget, "P1b": P1b, "P2": P2, "P2a": P2, "P2+A": P2}
+    if name in classes:
+        names = {f.name for f in fields(classes[name])}
+        kw = {k: v for k, v in kw.items() if k in names}
     if name == "P1":
         return P1(knob=knob, **kw)
     if name == "P1a":
