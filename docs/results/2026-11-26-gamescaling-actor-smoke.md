@@ -56,3 +56,37 @@ attack).
 4. **Faster linear attention**: flash-linear-attention needs Triton, which
    may not support the P40 (sm_61); the 2060 (sm_75, fp16) could run the
    model if the game's share of its 6 GB allows.
+
+## Speedups (same day, after the first run)
+
+Steady-state seconds per decision (5-turn history, 854×480 frames), from
+`sili_quartz/gamescaling.py` with `session_turns=30, fast_decode=True`:
+
+| Step | P40 fp32 | 2060 fp16 |
+|---|---|---|
+| First run (`generate()`, full prompt every call) | 4.3–4.6 | — |
+| Own decode loop, full prompt every call | 2.58 | — |
+| + KV cache kept across decisions (only the new frame is prefilled) | 1.07 | 0.93 |
+| + CUDA-graph decode, action vocabulary, stop at the end tag | **0.60** | **0.41** |
+
+Checks: cached vs fresh prefill KL 4e-6 and 1e-7 (fast path), same argmax;
+graph decode logits within 7e-4 of transformers (30/30 argmax); the action
+vocabulary (182 tokens) holds ≥ 99.98% of the model's probability at every
+one of 203 decoding steps. FP16 is not used on the P40 (its fp16 rate is
+1/64 of fp32).
+
+Where the 0.41 s on the 2060 goes:
+
+| Part | Seconds |
+|---|---|
+| new-frame prefill: render 0.003, processor 0.008, M-RoPE positions 0.007, vision 0.038, language model 0.112 | 0.18 |
+| decode: 19 tokens × 11.6 ms | 0.22 |
+
+- Decode per token is GPU-bound (the CUDA graph did not change it), at 8.9 ms
+  with a 2k-position KV buffer and 11.8 ms with a 12k one (P40: 14.5 / 16.0).
+- Language-model prefill of 430 tokens: 38% of its GPU time is the
+  linear-attention chunk kernel (flash-linear-attention via Triton; on Turing
+  it runs no faster than transformers' PyTorch fallback), 28% matrix
+  multiplies, 11% attention over the 6k context.
+- Flash-linear-attention made the P40 *slower* (decode 31 → 42 ms/token
+  before the CUDA graph); the graph decoder does not use it.
