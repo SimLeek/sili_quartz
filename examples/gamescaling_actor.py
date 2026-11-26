@@ -16,6 +16,12 @@ interval between chunks go to LOG.timing.jsonl. One JSON line per decision
 in LOG: the raw completion, whether it parsed, seconds, prompt tokens.
 Ctrl+C (or --decisions / --seconds) releases every key and hands control back.
 
+Training (A.9+): --replay-dir saves each decision's frame for the trainer
+(examples/gamescaling_trainer.py), --sync-dir applies the trainer's merged
+weight updates in place a few tensors per decision, --energy puts energy on
+the model (MLP activations and attention outputs, sili_quartz/energy_scan.py)
+at the dose the trainer writes to --dose-file (0 until it does).
+
 --random-from LOG is the A-0 random-policy baseline: no model; each decision
 is an action drawn uniformly (seeded) from a previous run's LOG, after a
 compute time drawn from the same LOG, so keys, mouse and cadence match that
@@ -126,6 +132,10 @@ def main():
     ap.add_argument("--no-pipeline", action="store_true", help="compute, then execute, in turn")
     ap.add_argument("--random-from", type=Path, default=None, help="random baseline: replay draws from this LOG")
     ap.add_argument("--seed", type=int, default=0, help="seed for --random-from")
+    ap.add_argument("--replay-dir", type=Path, default=None, help="save each decision's frame here (JPEG)")
+    ap.add_argument("--sync-dir", type=Path, default=None, help="apply the trainer's weight updates from here")
+    ap.add_argument("--energy", action="store_true", help="energy on the model, dose from --dose-file")
+    ap.add_argument("--dose-file", type=Path, default=None)
     a = ap.parse_args()
 
     if a.random_from:
@@ -139,6 +149,32 @@ def main():
     threading.Thread(target=client.run, daemon=True).start()
     while client.frame is None:
         time.sleep(0.05)
+    energy = applier = saver = None
+    if a.energy:
+        from sili_quartz.actor_objective import decoder_attn_post, make_energy, measure_site_means
+
+        frame0 = Image.fromarray(client.frame)
+        text = policy._render(policy.messages(frame0, turns=[]))
+        inputs = policy.processor(text=[text], images=[frame0], return_tensors="pt").to(policy.model.device)
+        mlp_means, attn_means = measure_site_means(policy.model, lambda: policy.model(**inputs))
+        energy = make_energy(policy.model, mlp_means, attn_means)
+        energy.set_dose(cost_scale=0.0, noise_scale=0.0)
+        policy.decoder.attn_post = decoder_attn_post(energy, len(mlp_means))
+        if a.dose_file:
+            means_path = a.dose_file.parent / "energy_means.json"
+            means_path.write_text(json.dumps({"mlp": mlp_means, "attn": attn_means}))
+    if a.sync_dir:
+        from sili_quartz.continual import SyncApplier
+
+        tied = {"lm_head.weight", "model.language_model.embed_tokens.weight"}
+        applier = SyncApplier(policy.model, a.sync_dir, per_call=16, delete_applied=True,
+                              on_applied=lambda name: policy.decoder.refresh_head() if name in tied else None)
+    if a.replay_dir:
+        from concurrent.futures import ThreadPoolExecutor
+
+        a.replay_dir.mkdir(parents=True, exist_ok=True)
+        saver = ThreadPoolExecutor(max_workers=1)
+    dose = 0.0
     pipelined = not a.no_pipeline
     executor = PipelinedExecutor(client) if pipelined else RobonetExecutor(client)
     client.set_want_control("ai")
@@ -151,6 +187,16 @@ def main():
                 wait = executor.chunk_end - compute_est - time.perf_counter()
                 if wait > 0:
                     time.sleep(wait)
+            if applier is not None:
+                applier.step()
+            if energy is not None and a.dose_file and n % 20 == 0 and a.dose_file.exists():
+                try:
+                    new = float(json.loads(a.dose_file.read_text())["dose"])
+                except (ValueError, KeyError, OSError):
+                    new = dose
+                if new != dose:
+                    dose = new
+                    energy.set_dose(cost_scale=dose, noise_scale=dose)
             frame_time = time.perf_counter()
             frame = Image.fromarray(client.frame)
             frame_age = time.time() - client.frame_time
@@ -162,11 +208,17 @@ def main():
                 executor.execute(action)
             n += 1
             parsed += action.parsed
+            if saver is not None:
+                saver.submit(frame.save, a.replay_dir / f"{n:06d}.jpg", quality=90)
             row = {"t": round(time.time(), 3), "n": n, "parsed": action.parsed, "truncated": action.truncated,
                    "text": action.text, "raw": completion, "dropped": action.dropped,
                    "seconds": round(policy.last_seconds, 3), "prompt_tokens": policy.last_prompt_tokens,
                    "prefill_s": round(policy.last_prefill_s, 3), "decode_s": round(policy.last_decode_s, 3),
                    "reused": policy.last_reused, "frame_age": round(frame_age, 3)}
+            if applier is not None:
+                row["synced_updates"] = applier.applied_updates
+            if energy is not None:
+                row["dose"] = dose
             if a.log:
                 with open(a.log, "a") as fh:
                     fh.write(json.dumps(row) + "\n")

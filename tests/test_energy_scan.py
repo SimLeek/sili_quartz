@@ -71,3 +71,15 @@ def test_set_dose_changes_live_dose_and_grad_passes_kept():
     assert h.grad is not None and torch.all((h.grad == 0) | (h.grad == 1))
     en.set_dose(cost_scale=2.0)
     assert abs(float(en.doses[0][1]) - 0.06) < 1e-7
+
+
+def test_training_step_recompute_gives_same_output():
+    lin = nn.Identity()
+    en = ScanEnergy([ScanSite(lin, mean=1.0, cost=0.5)])
+    h = torch.randn(1, 12, 30) * 4
+    en.begin_step(seed=3)
+    first = lin(h)
+    again = lin(h)  # what a checkpoint recompute does
+    en.end_step()
+    torch.testing.assert_close(first, again)
+    assert not torch.equal(first, h)

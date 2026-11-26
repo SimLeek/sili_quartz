@@ -118,6 +118,11 @@ class ScanEnergy:
         self.doses: list[Tensor | None] = [None] * len(sites)
         self.fired: list[Tensor | None] = [None] * len(sites)  # running device counters
         self.mult = (1.0, 1.0, 1.0)
+        # training mode (begin_step): each call restarts from the step's saved
+        # state with the step's noise, so a checkpointed layer's recompute in
+        # backward gives exactly the forward's output
+        self.step_seed: int | None = None
+        self.snapshots: list[Tensor | None] = [None] * len(sites)
         self.handles = [s.module.register_forward_hook(self._hook(i)) for i, s in enumerate(sites)]
 
     def _dose_values(self, site: ScanSite) -> list[float]:
@@ -134,32 +139,63 @@ class ScanEnergy:
             if self.doses[i] is not None:
                 self.doses[i].copy_(torch.tensor(self._dose_values(site)))
 
+    def begin_step(self, seed: int, at_rest: bool = True) -> None:
+        """Training: start a step (one replayed window). at_rest: energy starts at 0."""
+        self.step_seed = seed
+        self.snapshots = [None] * len(self.sites)
+        if at_rest:
+            self.reset()
+
+    def end_step(self) -> None:
+        self.step_seed = None
+        self.snapshots = [None] * len(self.sites)
+
     def reset(self) -> None:
         for st in self.states:
             if st is not None:
                 st.zero_()
 
-    def _hook(self, i: int):
+    def apply(self, i: int, h: Tensor) -> Tensor:
+        """Energy of site i on h: (B, T, n), or (B, n) for one decode step."""
         site = self.sites[i]
+        one_step = h.dim() == 2
+        if one_step:
+            h = h[:, None]
+        b, t, n = h.shape
+        if self.states[i] is None or self.states[i].numel() != b * n:
+            self.states[i] = torch.zeros(b * n, device=h.device, dtype=torch.float32)  # at rest
+            self.doses[i] = torch.tensor(self._dose_values(site), device=h.device, dtype=torch.float32)
+            self.fired[i] = torch.zeros((), device=h.device, dtype=torch.float32)
+        x = h.transpose(0, 1).reshape(t, b * n)
+        if self.step_seed is None:
+            noise = torch.randn(t, b * n, device=h.device, dtype=torch.float32)
+        else:
+            if self.snapshots[i] is None:
+                self.snapshots[i] = self.states[i].clone()
+            else:
+                self.states[i].copy_(self.snapshots[i])
+            gen = torch.Generator(device=h.device).manual_seed(self.step_seed * 1000 + i)
+            noise = torch.randn(t, b * n, device=h.device, dtype=torch.float32, generator=gen)
+        gate, const = energy_scan(x.detach(), self.states[i], noise, self.doses[i], site.scale)
+        out = x * gate + const
+        self.fired[i].add_((gate == 0).sum())
+        out = out.reshape(t, b, n).transpose(0, 1)
+        return out[:, 0] if one_step else out
 
+    def _hook(self, i: int):
         def hook(_module, _args, output):
             if not self.enabled:
                 return None
-            h = output[0] if isinstance(output, tuple) else output
-            b, t, n = h.shape
-            if self.states[i] is None or self.states[i].numel() != b * n:
-                self.states[i] = torch.zeros(b * n, device=h.device, dtype=torch.float32)  # at rest
-                self.doses[i] = torch.tensor(self._dose_values(site), device=h.device, dtype=torch.float32)
-                self.fired[i] = torch.zeros((), device=h.device, dtype=torch.float32)
-            x = h.transpose(0, 1).reshape(t, b * n)
-            noise = torch.randn(t, b * n, device=h.device, dtype=torch.float32)
-            gate, const = energy_scan(x.detach(), self.states[i], noise, self.doses[i], site.scale)
-            out = x * gate + const
-            self.fired[i].add_((gate == 0).sum())
-            out = out.reshape(t, b, n).transpose(0, 1)
+            out = self.apply(i, output[0] if isinstance(output, tuple) else output)
             return (out, *output[1:]) if isinstance(output, tuple) else out
 
         return hook
+
+    def site_index(self, module: nn.Module) -> int | None:
+        for i, s in enumerate(self.sites):
+            if s.module is module:
+                return i
+        return None
 
     def changed_count(self) -> float:
         """Entries changed (fired, shut off or dead-zoned) since the last call. Syncs."""

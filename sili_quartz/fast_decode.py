@@ -37,6 +37,7 @@ class GraphDecoder:
         self.dev, self.dtype = p.device, p.dtype
         self.max_len = max_len
         self.use_graph = use_graph
+        self.attn_post = None  # callable(layer index, x) -> x, applied to each attention output
         self.eps = cfg.rms_norm_eps
         self.types = list(cfg.layer_types[: cfg.num_hidden_layers])
         self.hd = cfg.head_dim
@@ -74,6 +75,13 @@ class GraphDecoder:
         self.length = 0
 
     # -- the step -------------------------------------------------------------------
+
+    @torch.no_grad()
+    def refresh_head(self) -> None:
+        """Re-copy the restricted output rows after lm_head's weight changed (in place,
+        so captured graphs see it)."""
+        if self.head_w is not None:
+            self.head_w.copy_(self.model.lm_head.weight[self.vocab_ids])
 
     def _rms(self, x, w):  # Qwen3_5RMSNorm: weight is zero-centred
         xf = x.float()
@@ -148,6 +156,8 @@ class GraphDecoder:
                 x = self._linear(i, layer.linear_attn, x)
             else:
                 x = self._attention(i, layer.self_attn, x, cos, sin)
+            if self.attn_post is not None:  # e.g. energy on what attention adds (set before capture)
+                x = self.attn_post(i, x)
             h = h + x
             h = h + layer.mlp(self._rms(h, layer.post_attention_layernorm.weight))
         h = self._rms(h, lm.norm.weight)

@@ -174,8 +174,14 @@ class WeightSync:
 class SyncApplier:
     """Actor side: apply packets from `sync_dir` in place, `per_call` matrices per `step()`."""
 
-    def __init__(self, model: nn.Module, sync_dir: Path, per_call: int = 4):
-        self.params = dict(model.named_parameters())
+    def __init__(self, model: nn.Module, sync_dir: Path, per_call: int = 4, on_applied=None,
+                 delete_applied: bool = False):
+        """on_applied(name): called after each tensor is written (e.g. to refresh copies)."""
+        # remove_duplicate=False: a tied weight is reachable under every name
+        self.params = dict(model.named_parameters(remove_duplicate=False))
+        self.on_applied = on_applied
+        self.delete_applied = delete_applied
+        self._current: int | None = None
         self.dir = Path(sync_dir)
         self.per_call = per_call
         self.next_index = 1
@@ -192,6 +198,8 @@ class SyncApplier:
             path = self.dir / f"update_{self.next_index:06d}.pt"
             if path.exists():
                 pkt = torch.load(path, map_location="cpu", weights_only=False)
+                if self.delete_applied:
+                    path.unlink()  # loaded into memory; the trainer keeps periodic checkpoints
                 self.loaded.put((self.next_index, pkt))
                 self.next_index += 1
             else:
@@ -216,6 +224,8 @@ class SyncApplier:
             else:
                 _, idx, vals = entry
                 w.view(-1)[idx.to(w.device, torch.long)] = vals.to(w.device, w.dtype)
+            if self.on_applied is not None:
+                self.on_applied(name)
             n += 1
         self.applied_matrices += n
         return n

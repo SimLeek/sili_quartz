@@ -26,6 +26,7 @@ world spawn.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -296,13 +297,38 @@ def focus_guard() -> list[str]:
     return did
 
 
-def watch(poll_s: float = 0.5, relaunch_every_s: float = 10.0, wait_s: float = 240.0) -> None:
+def screen_hash() -> str | None:
+    """Hash of a small grayscale grab of the whole screen (ImageMagick `import`)."""
+    try:
+        out = subprocess.run(["import", "-silent", "-window", "root", "-resize", "160x90!", "-colorspace", "gray",
+                              "gray:-"], capture_output=True, timeout=20).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return hashlib.sha1(out).hexdigest() if out else None
+
+
+def watch(poll_s: float = 0.5, relaunch_every_s: float = 10.0, wait_s: float = 240.0,
+          hang_s: float = 180.0, hang_check_s: float = 15.0) -> None:
     """Keep the game up and in front: relaunch it into the world (no reset)
-    when it is not running, and run focus_guard every poll. One JSON line
-    per event."""
-    last_check = 0.0
+    when it is not running, run focus_guard every poll, and kill the game if
+    the screen has not changed at all for hang_s (a hung game keeps its
+    process alive; the agent acts every 0.3 s, so a live game's screen moves).
+    One JSON line per event."""
+    last_check = last_hang_check = 0.0
+    last_hash, same_since = None, time.time()
     while True:
         now = time.time()
+        if game_pids() and now - last_hang_check >= hang_check_s:
+            last_hang_check = now
+            h = screen_hash()
+            if h is None or h != last_hash:
+                last_hash, same_since = h, now
+            elif now - same_since >= hang_s:
+                print(json.dumps({"t": now, "event": f"screen unchanged for {now - same_since:.0f} s, killing the game"}),
+                      flush=True)
+                stop()
+                last_hash, same_since = None, time.time()
+                last_check = 0.0
         if now - last_check >= relaunch_every_s:
             last_check = now
             if not game_pids():
