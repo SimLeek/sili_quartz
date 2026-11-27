@@ -205,3 +205,69 @@ def test_two_sided_dual_pulls_back_from_above_the_ceiling_and_rests_in_the_band(
         dual.update(1.0)  # back inside the band: both multipliers decay to 0
     assert dual.lam == 0.0 and dual.lam_hi == 0.0
     assert float(dual.penalty(torch.tensor(1.0))) == 0.0
+
+
+def _chunk_states(n_layers=4, chunk=2, T=30, d=6, seed=0):
+    """hs with frames as single image tokens at even positions and the state
+    after acting at odd positions; chunk outputs average to the next frame's
+    chunk input, with free variation that averages to 0 across the chunk."""
+    g = torch.Generator().manual_seed(seed)
+    L = 2 * T
+    hs = [torch.randn(1, L, d, generator=g) for _ in range(n_layers + 1)]
+    for c in range(n_layers // chunk):
+        lo = c * chunk
+        for t in range(T - 1):
+            nxt = hs[lo][0, 2 * (t + 1)]
+            free = torch.randn(chunk, d, generator=g)
+            free = free - free.mean(0)
+            for k in range(chunk):
+                hs[lo + k + 1][0, 2 * t + 1] = nxt + free[k]
+    return hs, [2 * t + 1 for t in range(T)], [(2 * t, 2 * t + 1) for t in range(T)]
+
+
+def test_chunk_tether_is_zero_when_each_chunks_layer_average_is_the_next_input():
+    from sili_quartz.actor_objective import ChunkTether
+
+    hs, after, runs = _chunk_states()
+    out = ChunkTether(4, chunk=2)(hs, after, runs)
+    assert out["tether_mse"] < 1e-6 and len(out["tether_chunk_mse"]) == 2
+    hs2, _, _ = _chunk_states(seed=1)
+    assert ChunkTether(4, chunk=2)(hs2[:1] + hs[1:], after, runs)["tether_mse"] > 0.1  # inputs changed
+
+
+def test_chunk_tether_trains_the_layers_and_never_the_chunk_input():
+    from sili_quartz.actor_objective import ChunkTether
+
+    hs, after, runs = _chunk_states()
+    hs = [h.clone().requires_grad_(True) for h in hs]
+    ChunkTether(4, chunk=2)(hs, after, runs)["tether_loss"].backward()
+    assert hs[1].grad is not None and hs[1].grad.abs().sum() > 0
+    assert hs[0].grad is None or hs[0].grad.abs().sum() == 0  # chunk 0's input: detached target only
+
+
+def test_input_share_is_one_for_a_copying_chunk_and_lower_otherwise():
+    from sili_quartz.actor_objective import input_share
+
+    x = torch.randn(1, 10, 8)
+    assert torch.allclose(input_share([x, x, x], chunk=2), torch.ones(1))
+    s = input_share([x, torch.randn(1, 10, 8), torch.randn(1, 10, 8)], chunk=2)
+    assert 0 <= float(s) < 0.5
+
+
+def test_row_norm_band_pulls_rows_back_into_the_band_and_cycles_layers():
+    from sili_quartz.continual import RowNormBand
+
+    torch.manual_seed(0)
+    lins = {f"l{i}": torch.nn.Linear(4, 3) for i in range(4)}
+    band = RowNormBand(lins, frac=0.8, per_call=2)
+    with torch.no_grad():
+        lins["l0"].weight[0] *= 3.0
+        lins["l1"].weight[1] *= 0.1
+        lins["l3"].weight[2] *= 5.0
+    changed, rows = band.step()  # visits l0, l1
+    assert changed == ["l0.weight", "l1.weight"] and rows == 2
+    n0 = lins["l0"].weight.norm(dim=1)
+    assert torch.allclose(n0[0], band.base["l0"][0] / 0.8)
+    assert torch.allclose(lins["l1"].weight.norm(dim=1)[1], band.base["l1"][1] * 0.8)
+    changed, rows = band.step()  # visits l2, l3
+    assert changed == ["l3.weight"] and rows == 1

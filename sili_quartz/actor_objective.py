@@ -312,9 +312,9 @@ class InputTether(nn.Module):
         return {"tether_loss": loss, "tether_mse": float(loss), "tether_copy_mse": float(copy)}
 
 
-def image_means(ids: list[int], embeds: Tensor, image_token: int, states: list[int]) -> Tensor:
-    """Mean input embedding over each turn's image tokens: for each user-turn end
-    in `states`, the last run of image tokens before it."""
+def image_runs(ids: list[int], image_token: int, states: list[int]) -> list[tuple[int, int]]:
+    """For each user-turn end in `states`, the (start, end) of the last run of
+    image tokens before it."""
     runs, start = [], None
     for i, t in enumerate(ids + [-1]):
         if t == image_token and start is None:
@@ -322,10 +322,65 @@ def image_means(ids: list[int], embeds: Tensor, image_token: int, states: list[i
         elif t != image_token and start is not None:
             runs.append((start, i))
             start = None
+    return [[r for r in runs if r[1] <= s][-1] for s in states]
+
+
+def image_means(ids: list[int], embeds: Tensor, image_token: int, states: list[int]) -> Tensor:
+    """Mean input embedding over each turn's image tokens."""
+    return torch.stack([embeds[a:b].mean(0) for a, b in image_runs(ids, image_token, states)])
+
+
+class ChunkTether(nn.Module):
+    """Neural columns across depth. The layers are cut into chunks of `chunk`;
+    for each dimension, the average of the chunk's layer outputs at the state
+    after acting on frame t must match the chunk's input at frame t+1 (the mean
+    over that frame's image tokens, detached). Each layer adds 1/chunk of the
+    average, so each can correct it. Standardized per dimension by banks of
+    recent values, as InputTether. A representation loss only, never a reward.
+
+    hs: hidden states as the model returns them, hs[i] = input of layer i,
+    hs[i + 1] = its output."""
+
+    def __init__(self, n_layers: int, chunk: int = 4, bank: int = 1024):
+        super().__init__()
+        assert n_layers % chunk == 0
+        self.chunk, self.n_chunks, self.bank_size = chunk, n_layers // chunk, bank
+        self.bx: list[Tensor | None] = [None] * self.n_chunks
+        self.by: list[Tensor | None] = [None] * self.n_chunks
+
+    @staticmethod
+    def _z(x: Tensor, ref: Tensor) -> Tensor:
+        return (x - ref.mean(0)) / (ref.std(0) + 1e-5)
+
+    def forward(self, hs, after: list[int], runs: list[tuple[int, int]]) -> dict:
+        losses, mses, copies = [], [], []
+        for c in range(self.n_chunks):
+            lo = c * self.chunk
+            out = torch.stack([hs[lo + k + 1][0, after] for k in range(self.chunk)]).mean(0).float()
+            inp = torch.stack([hs[lo][0, a:b].mean(0) for a, b in runs]).detach().float()
+            x, y, cur = out[:-1], inp[1:], inp[:-1]
+            ref_x = x.detach() if self.bx[c] is None else torch.cat([self.bx[c], x.detach()], 0)
+            ref_y = y if self.by[c] is None else torch.cat([self.by[c], y], 0)
+            yz = self._z(y, ref_y)
+            loss = (self._z(x, ref_x) - yz).pow(2).mean()
+            losses.append(loss)
+            mses.append(round(float(loss), 4))
+            copies.append(round(float((self._z(cur, ref_y) - yz).pow(2).mean()), 4))
+            self.bx[c], self.by[c] = ref_x[-self.bank_size:], ref_y[-self.bank_size:].detach()
+        total = torch.stack(losses).mean()
+        return {"tether_loss": total, "tether_mse": float(total), "tether_copy_mse": sum(copies) / len(copies),
+                "tether_chunk_mse": mses, "tether_chunk_copy_mse": copies}
+
+
+def input_share(hs, chunk: int) -> Tensor:
+    """Per chunk: how much of the chunk's output still points along its input,
+    cos^2(mean of the chunk's layer outputs, chunk input), averaged over tokens.
+    1 = the chunk only copies its input; differentiable."""
     out = []
-    for s in states:
-        r = [r for r in runs if r[1] <= s][-1]
-        out.append(embeds[r[0]:r[1]].mean(0))
+    for lo in range(0, len(hs) - 1, chunk):
+        inp = hs[lo][0].float()
+        avg = torch.stack([hs[lo + k + 1][0] for k in range(chunk)]).mean(0).float()
+        out.append(torch.nn.functional.cosine_similarity(avg, inp, dim=-1).pow(2).mean())
     return torch.stack(out)
 
 

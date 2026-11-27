@@ -131,6 +131,37 @@ def reset_adam_state(opt: torch.optim.Optimizer, params) -> None:
         opt.state.pop(p, None)
 
 
+class RowNormBand:
+    """Amortized magnitude health: each Linear's row norms stay within
+    [frac, 1/frac] x their starting values (a band, as the health floors are
+    frac x the early value). `step()` visits `per_call` layers in turn and
+    rescales rows outside the band to its edge; direction is left alone."""
+
+    def __init__(self, linears: dict[str, nn.Linear], frac: float = 0.8, per_call: int | None = None):
+        self.lin, self.names, self.frac = linears, list(linears), frac
+        self.base = {n: m.weight.detach().float().norm(dim=1) for n, m in linears.items()}
+        self.per_call = per_call or max(1, len(self.names) // 8)
+        self.cursor = 0
+
+    @torch.no_grad()
+    def step(self) -> tuple[list[str], int]:
+        """Returns the parameter names changed and the number of rows rescaled."""
+        changed, rows = [], 0
+        for _ in range(min(self.per_call, len(self.names))):
+            n = self.names[self.cursor]
+            self.cursor = (self.cursor + 1) % len(self.names)
+            w, b = self.lin[n].weight, self.base[n]
+            norm = w.float().norm(dim=1)
+            target = torch.minimum(torch.maximum(norm, b * self.frac), b / self.frac)
+            scale = torch.where(b > 0, target / norm.clamp(min=1e-12), torch.ones_like(norm))
+            moved = (scale - 1).abs() > 1e-6
+            if moved.any():
+                w.mul_(scale[:, None].to(w.dtype))
+                changed.append(n + ".weight")
+                rows += int(moved.sum())
+        return changed, rows
+
+
 class WeightSync:
     """Trainer side: per merge, a packet of the fp16 entries that changed."""
 

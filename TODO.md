@@ -225,6 +225,16 @@ smallest controller that sets the dose, working before 3 and 4.
     (reduced from 1024 to 128 values by a fixed random orthogonal projection,
     since the state is no wider than the input here). A column of one neuron
     would only copy the input (user).
+  - `--tether chunks` (user): columns across depth, no extra width. Layers in
+    chunks of 4; per dimension, the average of a chunk's layer outputs after
+    acting must match the chunk's input at the next frame, so each layer can
+    correct the average and the signal is re-anchored every 4 layers instead
+    of having to survive the whole depth (72+ layers in larger models).
+  - Full setup (user): chunk tether + energy on MLP/attention/input/output
+    with the dual dose + PR guard + two-sided entropy band + input-share band
+    (`--health pr+act+in`: below its floor the dose is scaled down, so energy's
+    waking "dreaming" cannot drown out the input) + amortized row-norm band
+    (`--renorm`) + Adam reset at merges. The freeze-gated sleep phase is TODO 3.
   - Energy self-maintenance instead of a loss: energy on input-driven state
     holding its setpoint has to anticipate the input. The energy-only arm
     (Eio_fixed1g) tests this; scored by the probe below.

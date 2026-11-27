@@ -19,6 +19,12 @@ on another GPU (the P40). Each step:
            H = entropy of the action tokens, held between 0.8x and 1/0.8x its
            early value; dose = max(lambda, lambda_act), the ceiling adds no dose]
           [+ the self-prediction loss for A1+self]
+          [+ w_tether * the chunk tether (--tether chunks): per chunk of
+           --tether-chunk layers, the average of the layers' outputs after
+           acting on frame t matches the chunk's input at frame t+1]
+          [+ lambda_in * the input-share band (--health pr+act+in): how much of
+           each chunk's output still points along its input; below its floor
+           the energy dose is scaled down by share / floor]
           [+ w_tether * the input tether (--tether head|col): the state after
            acting on frame t predicts frame t+1's mean image-token embedding,
            detached; head = a linear readout, col = each column of
@@ -51,11 +57,11 @@ import torch
 from PIL import Image
 
 from sili_quartz.actor_objective import (
-    Boredom, Dual, InputTether, PredictiveInfo, choice_columns, image_means, make_energy, measure_io_means, measure_site_means,
+    Boredom, ChunkTether, Dual, InputTether, PredictiveInfo, choice_columns, image_means, image_runs, input_share, make_energy, measure_io_means, measure_site_means,
     output_energy, participation_ratio, turn_positions,
 )
 from sili_quartz.continual import (
-    ContinualLoRA, WeightSync, direct_params, reset_adam_state, sync_tensors, target_linears,
+    ContinualLoRA, RowNormBand, WeightSync, direct_params, reset_adam_state, sync_tensors, target_linears,
 )
 from sili_quartz.gamescaling import (
     ACTION_END, MINECRAFT_KEYS, MINECRAFT_RULES, NOOP_TEXT, USER_TEXT, ActionGrammar, action_prefix_state,
@@ -130,17 +136,22 @@ def main() -> None:
     ap.add_argument("--energy-io", action="store_true",
                     help="energy also on the input neurons (token embeddings, vision merger) and the output "
                          "neurons (action-choice probabilities); the actor must run with --energy-io too")
-    ap.add_argument("--health", choices=("pr", "pr+act"), default="pr",
+    ap.add_argument("--health", choices=("pr", "pr+act", "pr+act+in"), default="pr",
                     help="pr+act: also hold the action entropy between 0.8x and 1/0.8x its early value "
                          "(second dual, two-sided)")
     ap.add_argument("--grammar", action="store_true",
                     help="the actor sampled under the action-format mask: apply the same mask to log pi and "
                          "the entropy")
-    ap.add_argument("--tether", choices=("none", "head", "col"), default="none",
+    ap.add_argument("--tether", choices=("none", "head", "col", "chunks"), default="none",
                     help="input tether: the centre state after acting predicts the next frame's input "
                          "(head: linear readout; col: neural columns, each column's average matches one value)")
     ap.add_argument("--w-tether", type=float, default=1.0)
     ap.add_argument("--tether-col-size", type=int, default=8, help="neurons per column for --tether col")
+    ap.add_argument("--tether-chunk", type=int, default=4,
+                    help="layers per chunk for --tether chunks and the input-share guard")
+    ap.add_argument("--renorm", action="store_true",
+                    help="amortized magnitude health: after each merge, rescale rows of 1/8 of the Linears "
+                         "back into [0.8, 1.25] x their starting norms")
     ap.add_argument("--merge-every", type=int, default=8)
     ap.add_argument("--seconds", type=float, default=0.0)
     ap.add_argument("--steps", type=int, default=0)
@@ -174,7 +185,14 @@ def main() -> None:
     for p in direct.values():
         p.requires_grad_(True)
     pi = PredictiveInfo(a.arm).to(a.device)
-    tether = InputTether(a.tether, col_size=a.tether_col_size, seed=a.seed).to(a.device) if a.tether != "none" else None
+    n_layers = len(model.model.language_model.layers)
+    if a.tether == "chunks":
+        tether = ChunkTether(n_layers, chunk=a.tether_chunk).to(a.device)
+    elif a.tether != "none":
+        tether = InputTether(a.tether, col_size=a.tether_col_size, seed=a.seed).to(a.device)
+    else:
+        tether = None
+    band = RowNormBand(linears) if a.renorm else None
     image_token = model.config.image_token_id
     opt = torch.optim.AdamW([
         {"params": list(lora.parameters()), "lr": a.lr},
@@ -184,14 +202,19 @@ def main() -> None:
     sync = WeightSync(sync_tensors(linears, direct), run / "sync")
     dual = Dual(enabled=a.arm != "A1-lam")
     bored = Boredom() if a.arm == "A1+bored" else None
-    dual_act = Dual(enabled=a.health == "pr+act" and a.arm != "A1-lam", two_sided=True)
+    dual_act = Dual(enabled=a.health in ("pr+act", "pr+act+in") and a.arm != "A1-lam", two_sided=True)
+    dual_in = Dual(enabled=a.health == "pr+act+in" and a.arm != "A1-lam", two_sided=True)
+    share_now = [1.0]
 
     def dose_now() -> float:
         if a.dose == "none" or a.arm == "A1-lam":
             return 0.0
         if a.dose.startswith("fixed:"):
             return float(a.dose.split(":")[1])
-        return max(dual.lam, dual_act.lam) + (bored.extra if bored else 0.0)
+        d = max(dual.lam, dual_act.lam) + (bored.extra if bored else 0.0)
+        if dual_in.enabled and dual_in.floor:
+            d *= min(1.0, share_now[0] / dual_in.floor)  # less dreaming while the input share is low
+        return d
 
     def window_inputs(rows: list[dict]):
         msgs = [{"role": "system", "content": [{"type": "text", "text": system}]}]
@@ -279,7 +302,10 @@ def main() -> None:
         with torch.set_grad_enabled(not warm):
             res = pi(feats)
             tres = None
-            if tether is not None:
+            if isinstance(tether, ChunkTether):
+                tres = tether(hs, [t["action"][-1] for t in turns],
+                              image_runs(ids.tolist(), image_token, [t["state"] for t in turns]))
+            elif tether is not None:
                 after = hs[CENTRE][0, torch.tensor([t["action"][-1] for t in turns], device=a.device)]
                 tres = tether(after, image_means(ids.tolist(), hs[0][0], image_token, [t["state"] for t in turns]))
         # log pi of each turn's sampled action tokens, over the restricted vocabulary
@@ -331,6 +357,12 @@ def main() -> None:
         ent = torch.stack(ents).mean()  # entropy of the action tokens, restricted vocabulary (nats)
         if dual_act.enabled and dual_act.floor:
             loss_h = loss_h + dual_act.penalty(ent)
+        share = None
+        if dual_in.enabled:
+            shares = input_share(hs, a.tether_chunk)
+            share = shares.mean()
+            if dual_in.floor:
+                loss_h = loss_h + dual_in.penalty(share)
         loss = a.w_rep * loss_rep + a.w_pg * loss_pg + a.w_health * loss_h
         if "self_loss" in res:
             loss = loss + res["self_loss"]
@@ -348,12 +380,19 @@ def main() -> None:
         step += 1
         dual.update(float(pr))
         dual_act.update(float(ent))
+        if share is not None:
+            share_now[0] = float(share)
+            dual_in.update(float(share))
         if bored is not None and res["mi"] is not None:
             bored.update(r_mean)
         synced = None
         if step % a.merge_every == 0:
             changed = lora.merge()
             reset_adam_state(opt, list(lora.parameters()))
+            renormed = 0
+            if band is not None:
+                moved, renormed = band.step()
+                changed = sorted(set(changed) | set(moved))
             path = sync.write(changed + list(direct), meta={"step": step})
             synced = path.name if path else None
             write_atomic(run / "dose.json", json.dumps({"dose": dose_now(), "step": step}))
@@ -373,6 +412,15 @@ def main() -> None:
         if tres is not None:
             row["tether_mse"] = round(tres["tether_mse"], 4)
             row["tether_copy_mse"] = round(tres["tether_copy_mse"], 4)
+            if "tether_chunk_mse" in tres:
+                row["tether_chunk_mse"] = tres["tether_chunk_mse"]
+                row["tether_chunk_copy_mse"] = tres["tether_chunk_copy_mse"]
+        if share is not None:
+            row.update({"share": round(float(share), 4), "share_chunks": [round(float(x), 4) for x in shares],
+                        "floor_in": dual_in.floor, "ceil_in": dual_in.ceiling, "lam_in": round(dual_in.lam, 4),
+                        "lam_in_hi": round(dual_in.lam_hi, 4)})
+        if band is not None and step % a.merge_every == 0:
+            row["renorm_rows"] = renormed
         with open(log_path, "a") as fh:
             fh.write(json.dumps(row) + "\n")
         if step <= 3 or step % 10 == 0:
