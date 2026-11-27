@@ -124,7 +124,18 @@ training-time energy at fixed:33, actor clean) and differ only in the drive.
 1. **Smoke tests.** Each new drive gets a trainer-only smoke run; one that
    fails is skipped.
 2. **Evaluate** every sibling (`~/runs/eval_node.sh`).
-3. **Select** (`~/runs/select_sibling.py`). Health is absolute, against the
+   - **Combination siblings** (user: the estimators are not mutually
+     exclusive): built from the singles that pass the health gate
+     (`~/runs/plan_combos.py`).
+     - The pool is {the best healthy energy setting, episodic, RND}. Energy
+       settings cannot combine with each other (one energy module).
+     - Combinations: every pair, plus all three when all are healthy.
+     - Rewards are combined without weights (`RewardMix`): each drive
+       standardized by its own running statistics, then summed. Equal weight
+       is the knob-free start; if a combination wins, its weights become a
+       trait for its children.
+     - Each combination is smoke-tested, run, and evaluated.
+3. **Select** across singles *and* combinations (`~/runs/select_sibling.py`). Health is absolute, against the
    untouched model:
    - at least half the scorecard windows healthy;
    - repertoire: distinct keys ≥ 0.7× 13, LB share ≤ 0.6;
