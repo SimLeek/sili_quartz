@@ -271,3 +271,26 @@ def test_row_norm_band_pulls_rows_back_into_the_band_and_cycles_layers():
     assert torch.allclose(lins["l1"].weight.norm(dim=1)[1], band.base["l1"][1] * 0.8)
     changed, rows = band.step()  # visits l2, l3
     assert changed == ["l3.weight"] and rows == 1
+
+
+def test_output_tether_matches_the_last_chunks_layer_average_to_the_emitted_tokens():
+    from sili_quartz.actor_objective import OutputTether
+
+    g = torch.Generator().manual_seed(0)
+    n_layers, chunk, L, d = 4, 2, 40, 6
+    emb = torch.randn(L, d, generator=g)  # emitted token embedding at each position
+    hs = [torch.randn(1, L, d, generator=g) for _ in range(n_layers + 1)]
+    qs = list(range(1, L))
+    for q in qs:  # the last chunk's layers at q-1 average to the token emitted at q
+        free = torch.randn(chunk, d, generator=g)
+        free = free - free.mean(0)
+        for k in range(chunk):
+            hs[n_layers - chunk + k + 1][0, q - 1] = emb[q] + free[k]
+    hs = [h.requires_grad_(True) for h in hs]
+    emitted = emb[qs].clone().requires_grad_(True)
+    out = OutputTether(n_layers, chunk)(hs, qs, emitted)
+    assert out["tether_out_mse"] < 1e-6
+    out = OutputTether(n_layers, chunk)(hs, qs, emitted[torch.randperm(len(qs))])
+    out["tether_out_loss"].backward()
+    assert out["tether_out_mse"] > 0.1 and hs[n_layers].grad.abs().sum() > 0 and emitted.grad is None
+    assert hs[1].grad is None  # only the last chunk is tied to the output

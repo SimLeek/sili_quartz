@@ -372,6 +372,34 @@ class ChunkTether(nn.Module):
                 "tether_chunk_mse": mses, "tether_chunk_copy_mse": copies}
 
 
+class OutputTether(nn.Module):
+    """The output side of the depth columns. The output neurons decide the
+    actual output, as the input is the actual input; the last chunk's layers
+    should also average to it. At each emitted action token, the average of
+    the last `chunk` layer outputs at the position that predicted it must match
+    that token's embedding (the output head is tied to the input embeddings),
+    detached, standardized per dimension by banks of recent values. A
+    representation loss only, never a reward."""
+
+    def __init__(self, n_layers: int, chunk: int = 4, bank: int = 4096):
+        super().__init__()
+        self.lo, self.chunk, self.bank_size = n_layers - chunk, chunk, bank
+        self.bx: Tensor | None = None
+        self.by: Tensor | None = None
+
+    def forward(self, hs, positions: list[int], emitted: Tensor) -> dict:
+        """positions: indices of emitted tokens; emitted: (P, d) their embeddings."""
+        pred_at = [q - 1 for q in positions]
+        x = torch.stack([hs[self.lo + k + 1][0, pred_at] for k in range(self.chunk)]).mean(0).float()
+        y = emitted.detach().float()
+        ref_x = x.detach() if self.bx is None else torch.cat([self.bx, x.detach()], 0)
+        ref_y = y if self.by is None else torch.cat([self.by, y], 0)
+        z = lambda v, r: (v - r.mean(0)) / (r.std(0) + 1e-5)  # noqa: E731
+        loss = (z(x, ref_x) - z(y, ref_y)).pow(2).mean()
+        self.bx, self.by = ref_x[-self.bank_size:], ref_y[-self.bank_size:]
+        return {"tether_out_loss": loss, "tether_out_mse": float(loss)}
+
+
 def input_share(hs, chunk: int) -> Tensor:
     """Per chunk: how much of the chunk's output still points along its input,
     cos^2(mean of the chunk's layer outputs, chunk input), averaged over tokens.

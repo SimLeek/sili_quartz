@@ -22,7 +22,10 @@ on another GPU (the P40). Each step:
           [+ w_tether * the chunk tether (--tether chunks): per chunk of
            --tether-chunk layers, the average of the layers' outputs after
            acting on frame t matches the chunk's input at frame t+1]
-          [+ lambda_in * the input-share band (--health pr+act+in): how much of
+          [+ w_tether * the output tether (--tether-out): at each emitted action
+           token, the average of the last chunk's layer outputs matches the
+           emitted token's embedding (the head is tied to the embeddings)]
+          [+ lambda_in * the input-share band (--health pr+in, pr+act+in): how much of
            each chunk's output still points along its input; below its floor
            the energy dose is scaled down by share / floor]
           [+ w_tether * the input tether (--tether head|col): the state after
@@ -57,7 +60,7 @@ import torch
 from PIL import Image
 
 from sili_quartz.actor_objective import (
-    Boredom, ChunkTether, Dual, InputTether, PredictiveInfo, choice_columns, image_means, image_runs, input_share, make_energy, measure_io_means, measure_site_means,
+    Boredom, ChunkTether, Dual, InputTether, OutputTether, PredictiveInfo, choice_columns, image_means, image_runs, input_share, make_energy, measure_io_means, measure_site_means,
     output_energy, participation_ratio, turn_positions,
 )
 from sili_quartz.continual import (
@@ -136,9 +139,10 @@ def main() -> None:
     ap.add_argument("--energy-io", action="store_true",
                     help="energy also on the input neurons (token embeddings, vision merger) and the output "
                          "neurons (action-choice probabilities); the actor must run with --energy-io too")
-    ap.add_argument("--health", choices=("pr", "pr+act", "pr+act+in"), default="pr",
+    ap.add_argument("--health", choices=("pr", "pr+in", "pr+act", "pr+act+in"), default="pr",
                     help="pr+act: also hold the action entropy between 0.8x and 1/0.8x its early value "
-                         "(second dual, two-sided)")
+                         "(second dual, two-sided; a direct loss on output randomness, superseded); "
+                         "+in: the input-share band")
     ap.add_argument("--grammar", action="store_true",
                     help="the actor sampled under the action-format mask: apply the same mask to log pi and "
                          "the entropy")
@@ -149,6 +153,8 @@ def main() -> None:
     ap.add_argument("--tether-col-size", type=int, default=8, help="neurons per column for --tether col")
     ap.add_argument("--tether-chunk", type=int, default=4,
                     help="layers per chunk for --tether chunks and the input-share guard")
+    ap.add_argument("--tether-out", action="store_true",
+                    help="output tether: the last chunk's layer average matches each emitted action token")
     ap.add_argument("--renorm", action="store_true",
                     help="amortized magnitude health: after each merge, rescale rows of 1/8 of the Linears "
                          "back into [0.8, 1.25] x their starting norms")
@@ -193,6 +199,7 @@ def main() -> None:
     else:
         tether = None
     band = RowNormBand(linears) if a.renorm else None
+    tether_out = OutputTether(n_layers, chunk=a.tether_chunk) if a.tether_out else None
     image_token = model.config.image_token_id
     opt = torch.optim.AdamW([
         {"params": list(lora.parameters()), "lr": a.lr},
@@ -203,7 +210,7 @@ def main() -> None:
     dual = Dual(enabled=a.arm != "A1-lam")
     bored = Boredom() if a.arm == "A1+bored" else None
     dual_act = Dual(enabled=a.health in ("pr+act", "pr+act+in") and a.arm != "A1-lam", two_sided=True)
-    dual_in = Dual(enabled=a.health == "pr+act+in" and a.arm != "A1-lam", two_sided=True)
+    dual_in = Dual(enabled=a.health in ("pr+in", "pr+act+in") and a.arm != "A1-lam", two_sided=True)
     share_now = [1.0]
 
     def dose_now() -> float:
@@ -308,6 +315,11 @@ def main() -> None:
             elif tether is not None:
                 after = hs[CENTRE][0, torch.tensor([t["action"][-1] for t in turns], device=a.device)]
                 tres = tether(after, image_means(ids.tolist(), hs[0][0], image_token, [t["state"] for t in turns]))
+            ores = None
+            if tether_out is not None:
+                qs = [q for t in turns for q in t["action"]]
+                emitted = model.get_input_embeddings().weight[ids[qs]]
+                ores = tether_out(hs, qs, emitted)
         # log pi of each turn's sampled action tokens, over the restricted vocabulary
         logits = out.logits[0]
         del out
@@ -368,6 +380,8 @@ def main() -> None:
             loss = loss + res["self_loss"]
         if tres is not None and not warm:
             loss = loss + a.w_tether * tres["tether_loss"]
+        if ores is not None and not warm:
+            loss = loss + a.w_tether * ores["tether_out_loss"]
         opt.zero_grad(set_to_none=True)
         if loss.requires_grad:
             loss.backward()
@@ -415,6 +429,8 @@ def main() -> None:
             if "tether_chunk_mse" in tres:
                 row["tether_chunk_mse"] = tres["tether_chunk_mse"]
                 row["tether_chunk_copy_mse"] = tres["tether_chunk_copy_mse"]
+        if ores is not None:
+            row["tether_out_mse"] = round(ores["tether_out_mse"], 4)
         if share is not None:
             row.update({"share": round(float(share), 4), "share_chunks": [round(float(x), 4) for x in shares],
                         "floor_in": dual_in.floor, "ceil_in": dual_in.ceiling, "lam_in": round(dual_in.lam, 4),

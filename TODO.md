@@ -230,9 +230,20 @@ smallest controller that sets the dose, working before 3 and 4.
     acting must match the chunk's input at the next frame, so each layer can
     correct the average and the signal is re-anchored every 4 layers instead
     of having to survive the whole depth (72+ layers in larger models).
+  - Output side (user): the output neurons decide the output, as the input is
+    the input; the last chunk's layers average to it (`--tether-out`: at each
+    emitted action token, the last 4 layers' average matches that token's
+    embedding, the head being tied). Later variant: the whole depth average
+    *is* the output. It replaces the pretrained readout, so it needs a gradual
+    hand-over from the final layer, not a switch.
+  - Removed (user, 2026-11-27): the action-entropy guard. The right entropy
+    depends on the moment (low while chopping wood, high for quick actions),
+    and the penalty trained the output to be random, mostly in the mouse
+    digits. Energy keeps neurons in a useful band; the averaging keeps a few
+    forced or exhausted neurons from changing what the model does.
   - Full setup (user): chunk tether + energy on MLP/attention/input/output
-    with the dual dose + PR guard + two-sided entropy band + input-share band
-    (`--health pr+act+in`: below its floor the dose is scaled down, so energy's
+    with the dual dose + PR guard + input-share band
+    (`--health pr+in`: below its floor the dose is scaled down, so energy's
     waking "dreaming" cannot drown out the input) + amortized row-norm band
     (`--renorm`) + Adam reset at merges. The freeze-gated sleep phase is TODO 3.
   - Energy self-maintenance instead of a loss: energy on input-driven state
