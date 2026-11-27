@@ -203,6 +203,30 @@ tree and the pieces here are updated from them.
 
 Scripts: `tools/lineage/` (copies of the sandbox orchestration).
 
+### Random-init checks (queue 25, after the drive generation)
+
+The base model is behaviour-cloned and near optimal, so a method can look good
+by not breaking it (user). Fully random init of the 0.8B vision-language model
+cannot learn vision in 2-hour runs. Two middle grounds instead:
+
+1. **Random policy on pretrained perception:** the last chunk (layers 21–24)
+   re-initialized (`tools/reinit_layers.py`) while vision and the early layers
+   keep their weights. The drive must build a policy from scratch. Tests core
+   requirement 2.
+2. **Scrambled keys** (`tools/scramble_keys.py`). Tests core requirement 1.
+
+Each start gets a 1-hour **no-training control** (the same random start,
+no updates). The generation's winner and runner-up are then trained from it
+for 2 hours (`--init` on actor and trainer). A method passes if it improves
+*from the random start*: scorecard trend, coherence, keys and k80 moving toward
+the untouched model's range, against the control
+(`~/runs/randinit_report.py`).
+
+Caveat: the trainer uses rank-8 LoRA merged every 8 steps. The change does
+accumulate to high rank (spectrum check), but learning a whole chunk this way
+is slow, so a null result may mean "too slow in 2 hours", not "cannot". The
+rate of improvement is logged, not only pass or fail.
+
 ### Next traits, by outcome
 
 - **If Tin3_et_curio advances**, its children each try one of:
