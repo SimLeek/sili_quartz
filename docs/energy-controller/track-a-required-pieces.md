@@ -15,8 +15,24 @@ the required set only if it is shown to help in practically all cases.
 1. **Coherent token output.** The model keeps (and, from scratch, learns) the
    output tokens it can use: the action keys, not a collapse onto one key or a
    spread over all 74.
-   - **Check:** starting from a randomly initialized output, does the training
-     loop eventually learn the token repertoire?
+   - **Check (not built):** the acceptance test for whichever token-memory
+     method is chosen (token energy, exclusive fan-in consolidation,
+     Clip-Cov/KL-Cov, ...). It is the same method we would rely on to *keep*
+     the tokens under RL, applied from a random start:
+     - **Start:** re-initialize the 74 key tokens' rows of the tied
+       embedding/output head (random, matched norm). The grammar mask still
+       keeps every action well-formed; only which keys to use is lost.
+     - **Stage A, the method alone, no reward** (offline, on replay frames):
+       sample actions, apply the method's updates. Pass if the sampled actions
+       come to use the key set at all (distinct keys and key entropy back in
+       the base model's range) instead of staying on a few keys. This tests
+       reachability.
+     - **Stage B, the method plus the candidate drive** (live): pass if the
+       keys used in play return to the base range *and* depend on the screen
+       (different keys in different states). This tests that the tokens are
+       learned as usable, not just reachable.
+     - Run the same test on the base model's own rows as the control: the
+       method must not erase a repertoire that is already there.
    - **Measured meanwhile:** key repertoire in play, and
      `tools/repertoire_probe.py` against the base model's 11–25 keys per
      10 minutes.
@@ -60,6 +76,7 @@ branches from the base model.
 | - +input tether, layers 1–12 | Tin3_c | no random output; fewer clicks, 9 deaths | plausible (needs a drive) |
 | -- +energy (input and interior), site mean | Tin3_e | random once at dose 1 | keep off |
 | --- +energy curiosity reward | Tin3_curio | drive read 0 (trainer energy from rest) | stopped; retry after column energy |
+| - +energy, column-averaged (8), site mean, dose 1 | Ecol8_c (no training) | running | diagnostic for unblocking energy curiosity |
 | - +input and output tether, norm band | FULL_c | output random from minute 10 | keep off (output tether without a drive) |
 | -- +energy on the output neurons | FULLe_c | random from the start | keep off |
 | - (format bug, pre-grammar) | A1pa, A1io | broken completions, no gradient | led to grammar (required) |
