@@ -144,3 +144,40 @@ def test_flat_token_site_steps_over_tokens_not_rows():
     out = mod(torch.ones(7, 3))  # (tokens, n), e.g. the vision merger
     assert out.shape == (7, 3)
     assert energy.states[0].numel() == 3  # one state per neuron, not per (token, neuron)
+
+
+def test_input_tether_trains_the_state_or_head_and_never_the_target():
+    from sili_quartz.actor_objective import InputTether
+
+    torch.manual_seed(0)
+    for mode in ("head", "col"):
+        tet = InputTether(mode, d_model=16, bank=64)
+        state = torch.randn(6, 16, requires_grad=True)
+        target = torch.randn(6, 16, requires_grad=True)
+        out = tet(state, target)
+        out["tether_loss"].backward()
+        assert state.grad is not None and torch.isfinite(state.grad).all() and state.grad[:-1].abs().sum() > 0
+        assert target.grad is None  # detached: the input cannot move toward the prediction
+        if mode == "head":
+            assert tet.head.weight.grad is not None
+        assert tet.targets.shape == (5, 16) and math.isfinite(out["tether_copy_mse"])
+
+
+def test_input_tether_col_mode_is_zero_when_the_state_holds_the_next_input():
+    from sili_quartz.actor_objective import InputTether
+
+    torch.manual_seed(1)
+    seq = torch.randn(40, 8)
+    tet = InputTether("col", d_model=8, bank=1000)
+    out = tet(seq[1:], seq[:-1])  # state_t = input_t+1
+    assert out["tether_mse"] < 1e-6
+
+
+def test_image_means_takes_each_turns_own_image_run():
+    from sili_quartz.actor_objective import image_means
+
+    IMG = 99
+    ids = [1, IMG, IMG, 2, 5, 3, IMG, IMG, IMG, 2, 5]
+    emb = torch.arange(len(ids), dtype=torch.float)[:, None].repeat(1, 2)
+    m = image_means(ids, emb, IMG, states=[3, 9])
+    assert m[:, 0].tolist() == [1.5, 7.0]

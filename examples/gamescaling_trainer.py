@@ -16,7 +16,10 @@ on another GPU (the P40). Each step:
           + lambda * relu(floor - PR) / floor (health; PR of the centre block)
           [+ lambda_act * relu(floor_act - H) / floor_act with --health pr+act:
            H = entropy of the action tokens; dose = max(lambda, lambda_act)]
-          [+ the self-prediction loss for A1+self];
+          [+ the self-prediction loss for A1+self]
+          [+ w_tether * the input tether (--tether head|col): the state after
+           acting on frame t predicts frame t+1's mean image-token embedding,
+           detached; a representation loss, never a reward];
    log pi is over the actor's own restricted action vocabulary;
 4. every `--merge-every` steps: merge the adapters into the weights, write a
    sync packet (exact fp16 diffs) and the dose for the actor (dose.json).
@@ -44,7 +47,7 @@ import torch
 from PIL import Image
 
 from sili_quartz.actor_objective import (
-    Boredom, Dual, PredictiveInfo, choice_columns, make_energy, measure_io_means, measure_site_means,
+    Boredom, Dual, InputTether, PredictiveInfo, choice_columns, image_means, make_energy, measure_io_means, measure_site_means,
     output_energy, participation_ratio, turn_positions,
 )
 from sili_quartz.continual import (
@@ -128,6 +131,10 @@ def main() -> None:
     ap.add_argument("--grammar", action="store_true",
                     help="the actor sampled under the action-format mask: apply the same mask to log pi and "
                          "the entropy")
+    ap.add_argument("--tether", choices=("none", "head", "col"), default="none",
+                    help="input tether: the centre state after acting predicts the next frame's input "
+                         "(head: linear readout; col: the state itself, no readout)")
+    ap.add_argument("--w-tether", type=float, default=1.0)
     ap.add_argument("--merge-every", type=int, default=8)
     ap.add_argument("--seconds", type=float, default=0.0)
     ap.add_argument("--steps", type=int, default=0)
@@ -161,10 +168,12 @@ def main() -> None:
     for p in direct.values():
         p.requires_grad_(True)
     pi = PredictiveInfo(a.arm).to(a.device)
+    tether = InputTether(a.tether).to(a.device) if a.tether != "none" else None
+    image_token = model.config.image_token_id
     opt = torch.optim.AdamW([
         {"params": list(lora.parameters()), "lr": a.lr},
         {"params": list(direct.values()), "lr": a.lr_direct, "weight_decay": 0.0},
-        {"params": list(pi.parameters()), "lr": 1e-3},
+        {"params": list(pi.parameters()) + (list(tether.parameters()) if tether else []), "lr": 1e-3},
     ])
     sync = WeightSync(sync_tensors(linears, direct), run / "sync")
     dual = Dual(enabled=a.arm != "A1-lam")
@@ -263,6 +272,10 @@ def main() -> None:
                  "rA": hs[REGION_A][0, st], "rB": hs[REGION_B][0, st]}
         with torch.set_grad_enabled(not warm):
             res = pi(feats)
+            tres = None
+            if tether is not None:
+                after = hs[CENTRE][0, torch.tensor([t["action"][-1] for t in turns], device=a.device)]
+                tres = tether(after, image_means(ids.tolist(), hs[0][0], image_token, [t["state"] for t in turns]))
         # log pi of each turn's sampled action tokens, over the restricted vocabulary
         logits = out.logits[0]
         del out
@@ -315,6 +328,8 @@ def main() -> None:
         loss = a.w_rep * loss_rep + a.w_pg * loss_pg + a.w_health * loss_h
         if "self_loss" in res:
             loss = loss + res["self_loss"]
+        if tres is not None and not warm:
+            loss = loss + a.w_tether * tres["tether_loss"]
         opt.zero_grad(set_to_none=True)
         if loss.requires_grad:
             loss.backward()
@@ -349,6 +364,9 @@ def main() -> None:
                "lam_act": round(dual_act.lam, 4), "dose": round(d, 4), "energy_changed": energy.changed_count() if d > 0 else 0,
                "grad_norm": round(grad_norm, 3), "tokens": int(ids.numel()), "seconds": round(time.time() - t0, 2), "synced": synced,
                "gpu_gib": round(torch.cuda.max_memory_allocated(a.device) / 2**30, 2)}
+        if tres is not None:
+            row["tether_mse"] = round(tres["tether_mse"], 4)
+            row["tether_copy_mse"] = round(tres["tether_copy_mse"], 4)
         with open(log_path, "a") as fh:
             fh.write(json.dumps(row) + "\n")
         if step <= 3 or step % 10 == 0:

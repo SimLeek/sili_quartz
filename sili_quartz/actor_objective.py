@@ -256,6 +256,68 @@ class PredictiveInfo(nn.Module):
             self.bank = {k: torch.cat([self.bank[k], v], 0)[-self.bank_size:] for k, v in raw.items()}
 
 
+class InputTether(nn.Module):
+    """The state after acting on frame t predicts frame t+1's input: the mean of
+    its image-token embeddings (the model's input layer), detached, standardized
+    per dimension by a bank of recent targets. A representation loss only, never
+    a reward: it ties the state to the world without paying the policy to make
+    the world predictable.
+
+    mode "head": a trainer-side linear readout of the state.
+    mode "col":  no readout; the state itself, standardized per dimension, must
+                 match (the input and the state are the same width here, so each
+                 input dimension is a column of one state neuron)."""
+
+    def __init__(self, mode: str = "head", d_model: int = 1024, bank: int = 1024):
+        super().__init__()
+        assert mode in ("head", "col")
+        self.mode = mode
+        self.head = nn.Linear(d_model, d_model) if mode == "head" else None
+        self.bank_size = bank
+        self.targets: Tensor | None = None
+        self.states: Tensor | None = None
+
+    @staticmethod
+    def _z(x: Tensor, ref: Tensor) -> Tensor:
+        return (x - ref.mean(0)) / (ref.std(0) + 1e-5)
+
+    def forward(self, state: Tensor, target: Tensor) -> dict:
+        """state: (T, d) after acting on each frame; target: (T, d) each frame's
+        input. Pairs (state_t, target_t+1)."""
+        x, y = state[:-1].float(), target[1:].detach().float()
+        cur = target[:-1].detach().float()
+        ref_y = y if self.targets is None else torch.cat([self.targets, y], 0)
+        yz = self._z(y, ref_y)
+        if self.head is not None:
+            pred = self.head(x)
+        else:
+            ref_x = x.detach() if self.states is None else torch.cat([self.states, x.detach()], 0)
+            pred = self._z(x, ref_x)
+        loss = (pred - yz).pow(2).mean()
+        copy = (self._z(cur, ref_y) - yz).pow(2).mean()  # predict t+1's input by t's: the floor to beat
+        self.targets = ref_y[-self.bank_size:].detach()
+        if self.head is None:
+            self.states = ref_x[-self.bank_size:]
+        return {"tether_loss": loss, "tether_mse": float(loss), "tether_copy_mse": float(copy)}
+
+
+def image_means(ids: list[int], embeds: Tensor, image_token: int, states: list[int]) -> Tensor:
+    """Mean input embedding over each turn's image tokens: for each user-turn end
+    in `states`, the last run of image tokens before it."""
+    runs, start = [], None
+    for i, t in enumerate(ids + [-1]):
+        if t == image_token and start is None:
+            start = i
+        elif t != image_token and start is not None:
+            runs.append((start, i))
+            start = None
+    out = []
+    for s in states:
+        r = [r for r in runs if r[1] <= s][-1]
+        out.append(embeds[r[0]:r[1]].mean(0))
+    return torch.stack(out)
+
+
 # --- health and the dual ------------------------------------------------------------------------
 
 def participation_ratio(h: Tensor) -> Tensor:

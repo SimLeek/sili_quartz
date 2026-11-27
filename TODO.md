@@ -204,6 +204,30 @@ smallest controller that sets the dose, working before 3 and 4.
   learned scalar over reasoning states, minimized by looping. That scalar may
   still be a useful signal for the controller (converged → focus).
 
+- **Track A: tether the state to its input (user, 2026-11-27).** Hypothesis:
+  something has to keep the model tied to its input (the world), as cortical
+  columns do. GameScaling's own training had no prediction loss: behaviour
+  cloning on assistant tokens, all weights trained (arXiv 2610.28698 §3).
+  Its tie to the world was the label stream: human actions, or VPT-style
+  inverse-dynamics labels that saw later frames (which subsets it used is not
+  stated), plus ~6 % post-hoc rationales written with the action visible.
+  RL drops that tie. Variants, as arms:
+  - `--tether head`: the centre state after acting on frame t predicts frame
+    t+1's mean image-token input (detached) through a linear readout;
+    representation loss only, never a reward, so pausing is not paid for.
+  - `--tether col`: the same with no readout: the state itself must match
+    (one state neuron per input dimension at this width).
+  - Energy self-maintenance instead of a loss: energy on input-driven state
+    holding its setpoint has to anticipate the input. The energy-only arm
+    (Eio_fixed1g) tests this; scored by the probe below.
+  - Later: columns on the Gated DeltaNet recurrent state (16 heads x 128 x 128
+    per layer, much wider than the input): column means of the state match
+    the input. Needs the state at each turn boundary, which the fused kernel
+    does not return.
+  - Every arm is scored by `tools/world_model_probe.py`: ridge from the
+    trained state to the untouched model's next-frame input on one fixed
+    reference replay, against copy and current-frame baselines.
+
 ## 3. Stochastic annealing + health pass: "sleep"
 - **Sleep window (≤ 8 h/day, once a day) = annealing + health passes that
   improve the optimizer state.** Sparse backprop runs during BOTH wake and
