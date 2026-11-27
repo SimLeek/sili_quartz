@@ -6,6 +6,9 @@
 Per 10-minute window, from the parsed decisions:
 - distinct actions / decisions (low = loops, ~1 = every decision different);
 - keys used (of the 74) and key entropy in bits (repertoire);
+- k80: how many keys cover 80 % of key usage (the untouched model: about 6 of
+  ~30 used in 30 minutes, i.e. 80-20; a collapse goes toward 1, random spread
+  past 30);
 - distinct keys per decision and median mouse move (mashing shows as many
   different keys and large moves; a key held on every step counts once);
 - mean log-prob per sampled token, as the actor sampled it (certainty);
@@ -22,6 +25,7 @@ there.
 from __future__ import annotations
 
 import argparse
+import itertools
 import collections
 import json
 import math
@@ -64,6 +68,8 @@ def windows(run: Path, minutes: int = 10) -> list[dict]:
         out.append({"minute": k * minutes, "decisions": len(rs),
                     "distinct_ratio": round(len({r["text"] for r in rs}) / len(rs), 3),
                     "keys": len(keys),
+                    "k80": next((i + 1 for i, c in enumerate(itertools.accumulate(sorted(keys.values(), reverse=True)))
+                                 if c >= 0.8 * n_k), 0) if n_k else 0,
                     "key_entropy": round(-sum(v / n_k * math.log2(v / n_k) for v in keys.values()), 2) if n_k else 0.0,
                     "keys_per_decision": round(sum(nk) / len(nk), 1),
                     "distinct_keys_per_decision": round(sum(uk) / len(uk), 2),
@@ -119,7 +125,7 @@ def main() -> None:
         print(f"{run.name:24s} healthy {healthy}/{len(ws)} windows, first flag at minute {row['first_flag_minute']}, "
               f"game {row['game']}")
         for w in ws:
-            print(f"    {w['minute']:4d}  distinct {w['distinct_ratio']:.2f}  keys {w['keys']:3d}  H {w['key_entropy']:.2f}  "
+            print(f"    {w['minute']:4d}  distinct {w['distinct_ratio']:.2f}  keys {w['keys']:3d}  k80 {w['k80']:2d}  H {w['key_entropy']:.2f}  "
                   f"k/dec {w['keys_per_decision']:5.1f} uk/dec {w['distinct_keys_per_decision']:4.2f}  mouse {w['mouse_median']}  logp {w['token_logp']}  {','.join(w['flags'])}")
         if a.out:
             with open(a.out, "a") as fh:

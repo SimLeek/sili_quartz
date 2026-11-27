@@ -162,6 +162,24 @@ An offline track; it does not need the game.
      - From random init, every key starts equal, so usage comes out uniform.
      - From a trained model, the existing usage statistics are kept.
      - Fan-in consolidation fits this; a uniform-usage target does not.
+   - **Measured shapes (untouched model):** per-key *capacity* is nearly
+     uniform, while *usage* is heavy-tailed. Usage skew comes from context and
+     policy, not from capacity.
+     - Capacity: static fan-in strength log-σ 0.08 (min 0.83× the median);
+       active drive log-σ 0.18.
+     - Usage: roughly log-normal, log-σ 2.2–2.4, skew −0.02 to +0.64. With σ
+       that large the log-normal mode is under one press, so the mode cannot
+       serve as a floor (the user's first suggestion).
+     - Floor for consolidation (proposed): a key is fading when its capacity
+       falls below the untouched model's weakest-key ratio, 0.83× the current
+       median capacity. A measured anchor.
+     - Usage guard: k80, the number of keys covering 80 % of usage in a fixed
+       30-minute window. It is about 6 (of ~30 used) for the untouched model,
+       i.e. 80-20 (user). A2c's collapse went to 1 (99-1); energy's mashing to
+       31 of 74. Added to the scorecard.
+     - Research: no study found fitting per-key usage in games (closest:
+       W-A-S-D concentration, heavy-tailed player behaviour, log-normal
+       achievement counts and action timing).
 4. **Stage B:** the winning method plus the advancing drive, live.
 
 ## Plausible (still to test), roughly by how directly each addresses a known failure
