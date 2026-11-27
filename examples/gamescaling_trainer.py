@@ -144,6 +144,9 @@ def main() -> None:
     ap.add_argument("--w-rep", type=float, default=1.0)
     ap.add_argument("--w-pg", type=float, default=1.0)
     ap.add_argument("--w-health", type=float, default=1.0)
+    ap.add_argument("--energy-io-side", choices=("both", "in"), default="both",
+                    help="with --energy-io: both = input and output neurons; in = input neurons only, no energy "
+                         "on the action choice (actor and trainer must match)")
     ap.add_argument("--energy-io", action="store_true",
                     help="energy also on the input neurons (token embeddings, vision merger) and the output "
                          "neurons (action-choice probabilities); the actor must run with --energy-io too")
@@ -268,7 +271,7 @@ def main() -> None:
         with torch.no_grad():
             mlp_means, attn_means = measure_site_means(model, lambda: model(**first, logits_to_keep=1))
             io_means = measure_io_means(model, lambda: model(**first, logits_to_keep=1)) if a.energy_io else None
-    cols = choice_columns(tok, vocab.tolist()) if a.energy_io else []
+    cols = choice_columns(tok, vocab.tolist()) if a.energy_io and a.energy_io_side == "both" else []
     cols_t = torch.tensor(cols, device=a.device)
     energy = make_energy(model, mlp_means, attn_means, io_means=io_means if a.energy_io else None,
                          n_choice=len(cols))
