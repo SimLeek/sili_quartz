@@ -163,6 +163,9 @@ def main() -> None:
                     help="layers per chunk for --tether chunks and the input-share guard")
     ap.add_argument("--tether-out", action="store_true",
                     help="output tether: the last chunk's layer average matches each emitted action token")
+    ap.add_argument("--w-tether-out", type=float, default=None,
+                    help="weight of the output tether (default: --w-tether); the policy term should dominate "
+                         "the output side")
     ap.add_argument("--renorm", action="store_true",
                     help="amortized magnitude health: after each merge, rescale rows of 1/8 of the Linears "
                          "back into [0.8, 1.25] x their starting norms")
@@ -417,7 +420,7 @@ def main() -> None:
         if tres is not None and not warm:
             loss = loss + a.w_tether * tres["tether_loss"]
         if ores is not None and not warm:
-            loss = loss + a.w_tether * ores["tether_out_loss"]
+            loss = loss + (a.w_tether if a.w_tether_out is None else a.w_tether_out) * ores["tether_out_loss"]
         opt.zero_grad(set_to_none=True)
         if loss.requires_grad:
             loss.backward()
