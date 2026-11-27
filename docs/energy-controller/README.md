@@ -13,11 +13,12 @@ A research write-up in paper order. Each part is written when its stage is done.
    - [Track A objectives: what the math says](track-a-objective-math.md),
      2026-11-27: why the MI arms found static screens, why our A2 rewards
      randomness, why the input tether is a real bound, and the ladder of arms.
-   - [Track A: required pieces](track-a-required-pieces.md), a ledger started
-     2026-11-27: plausible (still to test), required and keep off (results),
-     rejected (won't do), each with its evidence. Runs evolve by adding one
-     plausible piece to the proven required set.
-3. Results: not yet. Raw results also go in `docs/results/`, as before.
+3. [Track A: evolution, methodology and results](track-a-required-pieces.md),
+   from 2026-11-27: core requirements, the evolutionary method, the tree of
+   runs (why each piece is required, kept off or rejected), the run plan and
+   its options, and the pieces with their evidence. Raw results also go in
+   `docs/results/`, as before; offline measurements of the checkpoints are in
+   [checkpoint probes](../results/2026-11-27-checkpoint-probes.md).
 4. Conclusion: not yet.
 
 Background: the [collapse site sweep](../results/2026-11-23-collapse-site-sweep.md)

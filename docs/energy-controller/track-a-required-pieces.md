@@ -1,10 +1,24 @@
-# Track A: required pieces (ledger, started 2026-11-27)
+# Track A: evolution — methodology, results and plan (started 2026-11-27)
 
-Track A has moved from trying combinations to collecting the pieces a working
-setup needs. The piece sections read as **still to test** (plausible),
-**results** (required, keep off) and **won't do** (rejected). Update this file
-whenever a result moves a piece, with a link to the result and a row in the
-lineage table.
+The methodology and results for track A, continuing the
+[introduction](1-introduction.md) and the original
+[methodology draft](2-methodology.md). Track A moved from trying
+combinations to evolving a lineage: each run adds one piece to a proven base.
+The tree below is the record of *why* each piece counts as required, kept
+off, or rejected.
+
+Reading order:
+
+- core requirements;
+- the method;
+- the tree (results);
+- the run plan and its options;
+- the pieces, as **still to test** (plausible), **results** (required, keep
+  off) and **won't do** (rejected);
+- the measurements.
+
+Update this file whenever a result moves a piece: link the result doc and add
+a row to the tree.
 
 ## Core requirements (user, 2026-11-27)
 
@@ -57,7 +71,7 @@ the required set only if it is shown to help in practically all cases.
   additions; depth is shown with leading dashes; rows are in tree order. A
   child row sits under its parent.
 
-### Lineage so far
+### The tree (results)
 
 The runs before this ledger were not planned as a tree; they are placed as
 branches from the base model.
@@ -83,6 +97,67 @@ branches from the base model.
 | - +input and output tether, norm band | FULL_c | output random from minute 10 | keep off (output tether without a drive) |
 | -- +energy on the output neurons | FULLe_c | random from the start | keep off |
 | - (format bug, pre-grammar) | A1pa, A1io | broken completions, no gradient | led to grammar (required) |
+
+## Run plan
+
+### Queued now (on the sandbox)
+
+| order | node | adds (one trait) | what it tests |
+|---|---|---|---|
+| 1 | Root_g (running) | nothing: untouched model + grammar, no energy, no training, 1 h | the scorecard reference for every grammar run |
+| 2 | smoke test, then Tin3_et | energy in training only (fixed:33, the text runs' dose; actor plays clean), on the Tin3 node | whether training under energy hurts or helps play when the actor itself plays clean |
+| 3 | Tin3_et_curio | the energy-curiosity reward on the output side | the first candidate drive for core requirement 2 |
+
+After that the queue ends and the sandbox returns to desktop mode.
+
+### How a node is judged
+
+- **Scorecard:** `tools/run_scorecard.py` against Root_g: healthy windows,
+  minute of the first flag (loops, collapsed or spread keys, mashing), game
+  rates.
+- **Checkpoint probes:** repertoire, and the active fan-in (no damage pattern:
+  drive and spread falling while overlap rises); world-model probe.
+- **Advance:** no worse than the parent on these, and better on at least one
+  core requirement. Examples: keys that depend on the screen; a repertoire in
+  the base range.
+- **Otherwise:** the trait goes to keep off (with where) or rejected.
+
+### Next traits, by outcome
+
+- **If Tin3_et_curio advances**, its children each try one of:
+  - a lower learning rate, or several windows per step;
+  - play-time energy bursts on loop flags;
+  - dynamic depth connections at chunk boundaries;
+  - short trained thoughts (length as the knob);
+  - the output tether at low weight;
+  - Clip-Cov/KL-Cov with a larger fraction.
+- **If it fails:** Tin3_et alone shows whether training-time energy is the
+  problem. Alternative branches:
+  - the curiosity reward without the tether;
+  - state empowerment, once the world-model probe improves.
+
+### Token memory from random (core requirement 1): not started
+
+An offline track; it does not need the game.
+
+1. **Scramble:** a tool that re-initializes the 74 key rows of the tied
+   embedding/output head (random, matched norm). The result is a checkpoint
+   whose keys are scrambled.
+2. **Stage A harness:** on replay frames, sample with the grammar, apply the
+   method's updates, and measure the repertoire and the active fan-in every
+   N steps.
+   - **Control, no method:** expected to stay stuck.
+   - **Control, the method on the base model's own rows:** it must not erase
+     an existing repertoire.
+3. **Methods, one node each:**
+   - exclusive fan-in consolidation (a weight update by itself);
+   - token energy (virtual neurons; it changes sampling only, so it needs a
+     drive's gradient and belongs in stage B);
+   - Clip-Cov/KL-Cov with a larger fraction.
+   - **Open:** what the target repertoire is when nothing in the data says
+     which keys exist. Candidates: uniform over the key vocabulary, or the
+     base model's own usage statistics as a measured anchor.
+4. **Stage B:** the winning method plus the advancing drive, live.
 
 ## Plausible (still to test), roughly by how directly each addresses a known failure
 
