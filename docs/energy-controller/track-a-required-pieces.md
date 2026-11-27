@@ -196,7 +196,21 @@ An offline track; it does not need the game.
      only used the other keys, so nothing made a key beat the separators.
    - **v2** (`--competitors vocab`): exclusive drive against all
      action-vocabulary rivals, and updates with every rival's direction
-     projected out. Running on the scrambled model and the control.
+     projected out.
+     - **Control:** repertoire kept (14 keys, LB share 0.43).
+     - **Scrambled:** capacity did not rise (median 0.55 → 0.55, 23 keys
+       below the floor), and still 2 key presses in 120 actions.
+   - **Shared flaw of v1 and v2:** they only rotate write columns, never what
+     makes a neuron fire. Push is activation × path, and the chosen neurons
+     are mostly not active at key slots.
+     - **Next version:** for each key, choose unowned neurons that are active
+       at *key slots* (positions where the grammar allows a key), then make
+       their paths exclusive to it. Label-free: it uses slot positions, not
+       which key was pressed.
+     - **Also:** scrambling breaks reading (the rows are tied), so the model
+       cannot recognize its own past keys in the history either. Random init
+       has the same problem; rebuilding the output side alone may not be
+       enough.
 4. **Methods, one node each:**
    - exclusive fan-in consolidation (a weight update by itself);
    - token energy (virtual neurons; it changes sampling only, so it needs a
