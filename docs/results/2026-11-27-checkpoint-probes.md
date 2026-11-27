@@ -86,7 +86,12 @@ directions with best |cosine| < 0.5 to every pretrained direction).
 | A2c | 0.57 % → 0.89 % | 200 → 368 | 0.29–0.34 | 0 |
 | Tin3_c | 0.30 % → 0.46 % | 313 → 357 | 0.34–0.37 | 0 |
 | A2b | 0.59 % (min 23) | 200 | 0.32 | 0 |
-| Tin3_e | 0.35 % (min 30) | 308 | 0.39 | 0 |
+| Tin3_e | 0.35 % → 0.54 % | 308 → 385 | 0.33–0.39 | 0 |
+| Tin_c (all six chunks tethered) | 0.57 % (min 30) | 164 | **0.48** | 0 |
+
+All 23 checkpoints: in every matrix, each of the top-10 directions still has
+cosine ≥ 0.975 with some pretrained direction. Tin_c's change is the most
+concentrated (top-8 share 0.48).
 
 **No intruder dimensions, and no low-rank concentration:** the merged rank-8
 updates add up to a change whose rank keeps growing. Over 2-hour runs, LoRA
