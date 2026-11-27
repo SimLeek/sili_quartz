@@ -13,7 +13,7 @@ pointwise MI, dual on the PR of layers[12] setting the energy dose.
 
 | | |
 |---|---|
-| Decisions | 20,898; 19,902 parsed (the 996 unparsed are all one string, from minute 106) |
+| Decisions | 20,898; 19,902 parsed; 996 unparsed, from minute 106 (943 distinct broken completions, see below) |
 | Decision interval | median 0.32 s over the run; about 0.76 s in the last 15 minutes |
 | Trainer | 764 steps, 7.75 s per step, 7.33 GiB, P40 at most 71 °C (2060 at most 68 °C) |
 | Dose | **effectively 0**: PR floor 40.3, PR 39–60; dose at most 0.0077 units (step 705) |
@@ -27,12 +27,19 @@ Distinct actions and the most common action per 10 minutes:
 | 10 | 1,080 | `0 0 0 ; (no keys)` (73), `1 1 0 ; (no keys)` (72) |
 | 20 | 277 | `1 16 0 ; (no keys)` (516) |
 | 30–90 | **1** (2 at minute 90) | `1 16 0 ; (no keys)` (about 1,870 of 1,870) |
-| 100 | 546 | `1 16 0` (342), then the unparsed `0 0 0 ; ; ; ; ; ;` (227) |
-| 110 | **1** | the unparsed `0 0 0 ; ; ; ; ; ;` (769) |
+| 100 | 546 | `1 16 0` (342), then unparsed completions (227) |
+| 110 | (769 unparsed) | broken completions, each different |
 
-`1 16 0` is a small mouse move with no keys or clicks. The unparsed string
-differs from the no-key action only in single instead of double spaces
-between the `;` separators; robonet's parser rejects it, so it does nothing.
+`1 16 0` is a small mouse move with no keys or clicks.
+
+**Correction (same day):** an earlier version of this doc said the policy
+switched to a single string `0 0 0 ; ; ; ; ; ;`. That string is `NOOP_TEXT`,
+which the actor logs in the `text` field for any completion that fails to
+parse. The real completions are in `raw`: 943 distinct strings in 996, 844 of
+them running to the 64-token cap, e.g. `-1000 -1000 184 161 115 73 31 13`
+(more than 3 numbers) or `-1000 1011 156 205 115 111<|actionaction_end|>152 ...`.
+The policy broke the action format; robonet executes nothing for these. The
+long completions are why the decision interval doubled to about 0.76 s.
 
 **The screen** (1 fps recording): by minute 25 the game was in Spanish (the
 Mods list, "Configuración"), and from minute 35 to the end every sampled
@@ -54,7 +61,7 @@ Trainer, every 40 steps (selected):
 | 721 | 114 | 4.28 | −1.16 | 43.6 |
 | 764 | 120 | 4.29 | −1.15 | 44.7 |
 
-The switch to the unparsed string at minute 106 comes with PR dropping to
+The switch to broken completions at minute 106 comes with PR dropping to
 its lowest (39.0 at step 552, 40.2 at 681) and the action log-prob falling
 from about −0.1 to −1.1. The dose stayed under 0.01 units throughout.
 
@@ -83,8 +90,9 @@ sentence of four or more words repeats. Top phrases: "the player has" 11,
 A1 with the action-entropy dual (`--health pr+act`), started 01:55 UTC. At
 minute 38: entropy 0.73 nats against a floor of about 0.35, lambda_act back
 at 0 after firing at minutes 7 and 18; distinct actions per 10 minutes 1,016,
-740, 224, 106. 1,607 of its first 4,563 decisions (35 %) are the same
-unparsed `0 0 0 ; ; ; ; ; ;`, from minute 7 on. The screen from minute 25 is
+740, 224, 106 (counting unparsed decisions once, as the placeholder). 1,607
+of its first 4,563 decisions (35 %) are broken completions, from minute 7 on
+(see the correction above; covered in the A1pa/A1io doc). The screen from minute 25 is
 Minecraft's "open this link or copy it to your clipboard?" dialog for
 `https://aka.ms/snapshotbugs?ref=game` (the bug-report button in the Game
 Menu), with "Saved screenshot" lines in chat behind it (F2 presses).
@@ -109,9 +117,10 @@ prints QUEUE_DONE.
 
 ## Not measured yet
 
-- Why the decision interval doubled to about 0.76 s in the unparsed phase.
-- Whether the trainer's reward treats unparsed decisions differently from
-  parsed no-key ones.
+- Answered after: unparsed decisions carried no gradient. The trainer replays
+  them as `NOOP_TEXT`, which never matches the sampled tokens, so PPO skipped
+  them and the action-entropy dual measured the substituted no-op. Fixed with
+  `--grammar` (f567653), which masks decoding to the action format.
 - Thought–action agreement. Only the action tokens are trained, so fluent
   thoughts show the shared weights are not broken in general. They do not
   show that the trained behaviour is healthy. A score of whether the action
