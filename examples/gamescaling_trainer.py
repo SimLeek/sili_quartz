@@ -14,6 +14,8 @@ on another GPU (the P40). Each step:
                                                clipped to 1 +- eps; reward = the
                                                pointwise MI, normalized)
           + lambda * relu(floor - PR) / floor (health; PR of the centre block)
+          [+ lambda_act * relu(floor_act - H) / floor_act with --health pr+act:
+           H = entropy of the action tokens; dose = max(lambda, lambda_act)]
           [+ the self-prediction loss for A1+self];
    log pi is over the actor's own restricted action vocabulary;
 4. every `--merge-every` steps: merge the adapters into the weights, write a
@@ -101,6 +103,8 @@ def main() -> None:
     ap.add_argument("--w-rep", type=float, default=1.0)
     ap.add_argument("--w-pg", type=float, default=1.0)
     ap.add_argument("--w-health", type=float, default=1.0)
+    ap.add_argument("--health", choices=("pr", "pr+act"), default="pr",
+                    help="pr+act: also hold the action entropy above 0.8 x its early value (second dual)")
     ap.add_argument("--merge-every", type=int, default=8)
     ap.add_argument("--seconds", type=float, default=0.0)
     ap.add_argument("--steps", type=int, default=0)
@@ -141,13 +145,14 @@ def main() -> None:
     sync = WeightSync(sync_tensors(linears, direct), run / "sync")
     dual = Dual(enabled=a.arm != "A1-lam")
     bored = Boredom() if a.arm == "A1+bored" else None
+    dual_act = Dual(enabled=a.health == "pr+act" and a.arm != "A1-lam")
 
     def dose_now() -> float:
         if a.dose == "none" or a.arm == "A1-lam":
             return 0.0
         if a.dose.startswith("fixed:"):
             return float(a.dose.split(":")[1])
-        return dual.lam + (bored.extra if bored else 0.0)
+        return max(dual.lam, dual_act.lam) + (bored.extra if bored else 0.0)
 
     def window_inputs(rows: list[dict]):
         msgs = [{"role": "system", "content": [{"type": "text", "text": system}]}]
@@ -233,7 +238,7 @@ def main() -> None:
         # log pi of each turn's sampled action tokens, over the restricted vocabulary
         logits = out.logits[0]
         del out
-        lps, tok_lp = [], []
+        lps, tok_lp, ents = [], [], []
         for t in turns:
             pos = torch.tensor(t["action"], device=a.device)
             tgt = vocab_index[ids[pos]]
@@ -242,6 +247,7 @@ def main() -> None:
             lp_all = torch.log_softmax(logits[rows_][:, vocab].float(), -1)
             lp_tok = torch.where(ok, lp_all.gather(1, tgt.clamp(min=0)[:, None])[:, 0], torch.zeros_like(tgt, dtype=torch.float))
             lps.append(lp_tok[ok].mean())
+            ents.append(-(lp_all.exp() * lp_all).sum(-1)[ok].mean())
             tok_lp.append(lp_tok)
         lps = torch.stack(lps)
         reward = res["reward"]
@@ -270,6 +276,9 @@ def main() -> None:
         lam = dual.lam
         floor = dual.floor or float(pr)
         loss_h = (lam * torch.relu(floor - pr) / floor) if dual.floor else torch.zeros((), device=a.device)
+        ent = torch.stack(ents).mean()  # entropy of the action tokens, restricted vocabulary (nats)
+        if dual_act.enabled and dual_act.floor:
+            loss_h = loss_h + dual_act.lam * torch.relu(dual_act.floor - ent) / dual_act.floor
         loss = a.w_rep * loss_rep + a.w_pg * loss_pg + a.w_health * loss_h
         if "self_loss" in res:
             loss = loss + res["self_loss"]
@@ -284,6 +293,7 @@ def main() -> None:
         energy.end_step()
         step += 1
         dual.update(float(pr))
+        dual_act.update(float(ent))
         if bored is not None and res["mi"] is not None:
             bored.update(r_mean)
         synced = None
@@ -302,7 +312,8 @@ def main() -> None:
                "newest_decision": rows[-1]["n"], "mi": None if res["mi"] is None else round(float(res["mi"]), 4),
                "reward_mean": round(r_mean, 4), "logp_mean": round(float(lps.mean()), 3),
                "loss_pg": round(float(loss_pg), 4), "ppo_turns": matched, "pr": round(float(pr), 3), "floor": dual.floor,
-               "lam": round(lam, 4), "dose": round(d, 4), "energy_changed": energy.changed_count() if d > 0 else 0,
+               "lam": round(lam, 4), "ent": round(float(ent), 4), "floor_act": dual_act.floor,
+               "lam_act": round(dual_act.lam, 4), "dose": round(d, 4), "energy_changed": energy.changed_count() if d > 0 else 0,
                "grad_norm": round(grad_norm, 3), "tokens": int(ids.numel()), "seconds": round(time.time() - t0, 2), "synced": synced,
                "gpu_gib": round(torch.cuda.max_memory_allocated(a.device) / 2**30, 2)}
         with open(log_path, "a") as fh:
