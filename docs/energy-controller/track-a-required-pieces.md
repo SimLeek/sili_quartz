@@ -104,9 +104,9 @@ branches from the base model.
 
 | order | node | adds (one trait) | what it tests |
 |---|---|---|---|
-| 1 | Root_g (running) | nothing: untouched model + grammar, no energy, no training, 1 h | the scorecard reference for every grammar run |
+| 1 | Root_g (done) | nothing: untouched model + grammar, no energy, no training, 1 h | the scorecard reference: k80 4–7, distinct ratio ~0.8, 0.6–0.7 distinct keys per decision, mouse 11–23; mined 154 per hour of play |
 | 2 | smoke test, then Tin3_et | energy in training only (fixed:33, the text runs' dose; actor plays clean), on the Tin3 node | whether training under energy hurts or helps play when the actor itself plays clean |
-| 3 | Tin3_et_curio | the energy-curiosity reward on the output side | the first candidate drive for core requirement 2 |
+| 3 | Tin3_et_curio (commit 0476832) | the energy-curiosity reward on the output side | the first candidate drive for core requirement 2. The smoke run showed the drive building up with frame position (energy starts at rest each window: 0.025 → 0.094), so each position's running mean drive reduction is subtracted |
 
 Then queue 24 runs unattended:
 
@@ -115,7 +115,8 @@ Then queue 24 runs unattended:
    repertoire probe and active fan-in on its last checkpoint.
 2. **Decide** (`~/runs/decide_node.py child parent`). A node advances if all
    of these hold:
-   - its share of healthy scorecard windows is at least its parent's;
+   - its share of healthy scorecard windows is at least its parent's, and its
+     median deviation is no worse than the parent's plus 0.05;
    - repertoire: distinct keys ≥ 0.7× the base model's 13, and LB share ≤ 0.6;
    - active fan-in: no damage pattern (drive < 0.9× base together with
      overlap > base + 0.01).
@@ -132,9 +133,14 @@ tree and the pieces here are updated from them.
 
 ### How a node is judged
 
-- **Scorecard:** `tools/run_scorecard.py` against Root_g: healthy windows,
-  minute of the first flag (loops, collapsed or spread keys, mashing), game
-  rates.
+- **Scorecard:** `tools/run_scorecard.py` against Root_g.
+  - **Median deviation:** per window, the mean relative distance from Root_g
+    over the six repertoire metrics. It orders the runs: Root_g 0.03, A1c
+    0.24, Tin3_c 0.32, A2_klcov 0.38, Tin_c 0.41, FULL_c 0.73, A2c 0.80,
+    play-time energy 10–12.
+  - **Severe flags:** a metric at least 50 % off in the failing direction.
+    Min/max of the 1-hour reference flagged everything.
+  - **Game rates.**
 - **Checkpoint probes:** repertoire, and the active fan-in (no damage pattern:
   drive and spread falling while overlap rises); world-model probe.
 - **Advance:** no worse than the parent on these, and better on at least one
