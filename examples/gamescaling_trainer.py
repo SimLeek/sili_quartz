@@ -71,7 +71,7 @@ import torch
 from PIL import Image
 
 from sili_quartz.actor_objective import (
-    Boredom, ChunkTether, CovControl, Dual, EpisodicNovelty, RNDNovelty, InputTether, OutputTether, energy_drive, PredictiveInfo, choice_columns, image_means, image_runs, input_share, make_energy, measure_io_means, measure_site_means,
+    Boredom, ChunkTether, CovControl, Dual, EpisodicNovelty, RNDNovelty, RewardMix, InputTether, OutputTether, energy_drive, PredictiveInfo, choice_columns, image_means, image_runs, input_share, make_energy, measure_io_means, measure_site_means,
     output_energy, participation_ratio, turn_positions,
 )
 from sili_quartz.continual import (
@@ -185,8 +185,10 @@ def main() -> None:
     ap.add_argument("--renorm", action="store_true",
                     help="amortized magnitude health: after each merge, rescale rows of 1/8 of the Linears "
                          "back into [0.8, 1.25] x their starting norms")
-    ap.add_argument("--reward", choices=("mi", "empower", "energy", "episodic", "rnd"), default="mi",
-                    help="PPO reward: the pointwise MI of the arm; state empowerment (needs --tether chunks); "
+    ap.add_argument("--reward", default="mi",
+                    help="PPO reward: mi | empower | energy | episodic | rnd, or a comma-separated combination of "
+                         "energy, episodic and rnd (each standardized by its own running statistics, then summed). "
+                         "mi: the pointwise MI of the arm; empower: state empowerment (needs --tether chunks); "
                          "or energy curiosity: the drive reduction D(frame k) - D(frame k+1), D = share of the "
                          "input-side neurons energy forced or shut off on the frame (needs a fixed dose > 0)")
     ap.add_argument("--reward-sites", choices=("layers", "input"), default="layers",
@@ -251,8 +253,12 @@ def main() -> None:
     tether_out = OutputTether(n_layers, chunk=a.tether_chunk) if a.tether_out else None
     cov_ctl = CovControl(a.cov, k=a.cov_k, seed=a.seed) if a.cov != "none" else None
     drive_base: dict[int, tuple[int, float]] = {}  # frame position -> (count, sum of drive reductions)
-    episodic = EpisodicNovelty() if a.reward == "episodic" else None
-    rnd = RNDNovelty(d=model.config.text_config.hidden_size, seed=a.seed).to(a.device) if a.reward == "rnd" else None
+    drives_set = set(a.reward.split(","))
+    assert drives_set <= {"mi", "empower", "energy", "episodic", "rnd"}, f"unknown --reward {a.reward}"
+    assert len(drives_set) == 1 or drives_set <= {"energy", "episodic", "rnd"}, "combine only energy, episodic, rnd"
+    mix = RewardMix()
+    episodic = EpisodicNovelty() if "episodic" in drives_set else None
+    rnd = RNDNovelty(d=model.config.text_config.hidden_size, seed=a.seed).to(a.device) if "rnd" in drives_set else None
     image_token = model.config.image_token_id
     opt = torch.optim.AdamW([
         {"params": list(lora.parameters()), "lr": a.lr},
@@ -304,12 +310,12 @@ def main() -> None:
             mlp_means, attn_means = measure_site_means(model, lambda: model(**first, logits_to_keep=1))
             io_means = measure_io_means(model, lambda: model(**first, logits_to_keep=1)) if a.energy_io else None
     cols = choice_columns(tok, vocab.tolist()) if a.energy_io and a.energy_io_side == "both" else []
-    if a.reward == "energy":
+    if "energy" in drives_set:
         assert a.dose.startswith("fixed:") and float(a.dose.split(":")[1]) > 0, "--reward energy needs --dose fixed:x"
     cols_t = torch.tensor(cols, device=a.device)
     energy = make_energy(model, mlp_means, attn_means, io_means=io_means if a.energy_io else None,
                          n_choice=len(cols), col=a.energy_col)
-    if a.reward == "energy":  # sites: MLP outputs per layer, then attention outputs per layer, then the input sites
+    if "energy" in drives_set:  # sites: MLP outputs per layer, then attention outputs per layer, then the input sites
         nl = len(mlp_means)
         if a.reward_sites == "input":
             assert a.energy_io, "--reward-sites input needs --energy-io (energy on the input neurons)"
@@ -433,12 +439,16 @@ def main() -> None:
         # empowerment of the window's last state for the action that led to it
         drives = None
         loss_nov = None
-        if a.reward == "energy" and energy.trace:
+        if "energy" in drives_set and energy.trace:
             drives = energy_drive(energy.trace, image_runs(ids.tolist(), image_token, [t["state"] for t in turns]))
             energy.trace = {}
+        per_drive: dict[str, dict[int, float]] = {}
+        rewards = {}
         if a.reward == "mi":
             rewards = {k: float(v) for k, v in enumerate(res["reward"])} if res["mi"] is not None else {}
-        elif a.reward == "energy":
+        elif a.reward == "empower":
+            rewards = {len(turns) - 2: emp} if emp is not None and not warm else {}
+        if "energy" in drives_set:
             rewards = {}
             if drives and not warm:
                 # the trainer's energy starts at rest each window, so the drive builds up with the frame's
@@ -448,19 +458,19 @@ def main() -> None:
                     n_k, s_k = drive_base.get(k, (0, 0.0))
                     rewards[k] = diff - (s_k / n_k if n_k else diff)
                     drive_base[k] = (n_k + 1, s_k + diff)
-        elif a.reward in ("episodic", "rnd"):
-            rewards = {}
+            per_drive["energy"] = rewards
+        if drives_set & {"episodic", "rnd"}:
             if len(turns) == len(win):
                 runs_ = image_runs(ids.tolist(), image_token, [t["state"] for t in turns])
                 reps = torch.stack([hs[a.novelty_layer][0, s0:s1].mean(0) for s0, s1 in runs_]).detach().float()
                 if episodic is not None:
                     nov = episodic(reps, [r["n"] for r in win])
-                else:
-                    nov, loss_nov = rnd(reps)
-                if not warm:
-                    rewards = {k: nov[k + 1] for k in range(len(turns) - 1)}
-        else:
-            rewards = {len(turns) - 2: emp} if emp is not None and not warm else {}
+                    per_drive["episodic"] = {k: nov[k + 1] for k in range(len(turns) - 1)} if not warm else {}
+                if rnd is not None:
+                    nov_r, loss_nov = rnd(reps)
+                    per_drive["rnd"] = {k: nov_r[k + 1] for k in range(len(turns) - 1)} if not warm else {}
+        if per_drive:
+            rewards = mix(per_drive) if all(per_drive.values()) else {}
         r_mean = sum(rewards.values()) / len(rewards) if rewards else 0.0
         matched = 0
         loss_rep = -res["mi"] if res["mi"] is not None else torch.zeros((), device=a.device)

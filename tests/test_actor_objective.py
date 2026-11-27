@@ -477,3 +477,21 @@ def test_rnd_novelty_falls_for_a_frame_the_predictor_has_trained_on():
         opt.zero_grad(); loss.backward(); opt.step()
     _, after = rnd(seen)
     assert float(after) < 0.2 * float(before)
+
+
+def test_reward_mix_puts_drives_on_one_scale_and_passes_a_single_drive_through():
+    from sili_quartz.actor_objective import RewardMix
+
+    mix = RewardMix()
+    single = {0: 5.0, 1: -2.0}
+    assert mix({"energy": single}) == single
+    g = torch.Generator().manual_seed(0)
+    for _ in range(200):  # one drive in tiny units, one in huge units
+        a = {k: float(torch.randn(1, generator=g)) * 1e-3 for k in range(5)}
+        b = {k: float(torch.randn(1, generator=g)) * 1e3 for k in range(5)}
+        out = mix({"energy": a, "rnd": b})
+    sa = mix.stats["energy"]; sb = mix.stats["rnd"]
+    za = abs((a[0] - sa[1]) / (sa[2] / sa[0]) ** 0.5)
+    zb = abs((b[0] - sb[1]) / (sb[2] / sb[0]) ** 0.5)
+    assert abs(out[0] - (((a[0] - sa[1]) / (sa[2] / sa[0]) ** 0.5) + ((b[0] - sb[1]) / (sb[2] / sb[0]) ** 0.5))) < 1e-9
+    assert za < 5 and zb < 5  # both standardized: neither swamps the other

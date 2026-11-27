@@ -557,6 +557,34 @@ class RNDNovelty(nn.Module):
         return out, err.mean()
 
 
+class RewardMix:
+    """Combine several drives without weights: each drive's per-action rewards
+    are standardized by that drive's own running mean and standard deviation
+    (over every value it has produced), then summed. Every drive then
+    contributes on the same scale whatever its raw units. Equal weighting is
+    itself a choice; it is the knob-free starting point."""
+
+    def __init__(self):
+        self.stats: dict[str, list[float]] = {}  # name -> [n, mean, m2]
+
+    def __call__(self, per_drive: dict[str, dict[int, float]]) -> dict[int, float]:
+        if len(per_drive) == 1:
+            return next(iter(per_drive.values()))
+        keys = set.intersection(*(set(r) for r in per_drive.values())) if per_drive else set()
+        out = {k: 0.0 for k in keys}
+        for name, r in per_drive.items():
+            st = self.stats.setdefault(name, [0, 0.0, 0.0])
+            for v in r.values():
+                st[0] += 1
+                d = v - st[1]
+                st[1] += d / st[0]
+                st[2] += d * (v - st[1])
+            sd = (st[2] / st[0]) ** 0.5 if st[0] > 1 else 1.0
+            for k in keys:
+                out[k] += (r[k] - st[1]) / sd if sd > 0 else 0.0
+        return out
+
+
 def input_share(hs, chunk: int) -> Tensor:
     """Per chunk: how much of the chunk's output still points along its input,
     cos^2(mean of the chunk's layer outputs, chunk input), averaged over tokens.
