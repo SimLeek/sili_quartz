@@ -147,7 +147,7 @@ Added one piece at a time, as a ladder rather than a full grid:
 | rung | adds | arm |
 |---|---|---|
 | R1 | input and output tether only | Tchunk_c (queued) |
-| R1+E | energy on an already tether-trained model | FULLe_c (queued, warm start from FULL_c) |
+| R1+E | the same columns and norm band with energy on, from the base model | FULLe_c (queued; FULL_c is its no-energy reference) |
 | R2 | state empowerment reward | not built; first validated offline (below) |
 | R3 | energy on R2 | |
 | R4 | freeze-gated sleep | |
@@ -159,7 +159,7 @@ Controls already queued, each with its prediction written down here first:
 | A1c | a static screen (pause, death or dialog) within the run |
 | A2c | high-entropy actions with large mouse moves, no static screen |
 | Tchunk_c | behaviour near the base model; world-model probe gain above base |
-| FULLe_c | tether losses keep falling with energy on; probe gain no lower than FULL_c |
+| FULLe_c | tether losses fall as in FULL_c with energy on; probe gain no lower than FULL_c |
 
 **Check before R2:** on Tchunk_c's checkpoint, offline, the state-empowerment
 estimate should be near 0 on pause, death and dialog frames and higher in the
