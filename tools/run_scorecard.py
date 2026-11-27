@@ -9,6 +9,8 @@ Per 10-minute window, from the parsed decisions:
 - k80: how many keys cover 80 % of key usage (the untouched model: about 6 of
   ~30 used in 30 minutes, i.e. 80-20; a collapse goes toward 1, random spread
   past 30);
+- no-op share: decisions with no mouse movement and no keys (doing nothing; a
+  fixed mouse on the same menu with no keys is also a still-screen episode);
 - distinct keys per decision and median mouse move (mashing shows as many
   different keys and large moves; a key held on every step counts once);
 - mean log-prob per sampled token, as the actor sampled it (certainty);
@@ -55,6 +57,7 @@ def windows(run: Path, minutes: int = 10) -> list[dict]:
         rs = by[k]
         keys, mice, nk, lps, ei = collections.Counter(), [], [], [], []
         uk = []
+        noop = 0
         for r in rs:
             body = re.sub(r"<\|action_(start|end)\|>", "", r["text"])
             parts = body.split(";")
@@ -64,6 +67,11 @@ def windows(run: Path, minutes: int = 10) -> list[dict]:
             except (ValueError, IndexError):
                 pass
             ks = [x for p in parts[1:] for x in p.split()]
+            try:
+                n0 = parts[0].split()
+                noop += (not ks) and float(n0[0]) == 0 and float(n0[1]) == 0
+            except (ValueError, IndexError):
+                pass
             keys.update(ks)
             nk.append(len(ks))
             uk.append(len(set(ks)))
@@ -81,6 +89,7 @@ def windows(run: Path, minutes: int = 10) -> list[dict]:
                     "key_entropy": round(-sum(v / n_k * math.log2(v / n_k) for v in keys.values()), 2) if n_k else 0.0,
                     "keys_per_decision": round(sum(nk) / len(nk), 1),
                     "distinct_keys_per_decision": round(sum(uk) / len(uk), 2),
+                    "noop_share": round(noop / len(rs), 3),
                     "mouse_median": mice[len(mice) // 2] if mice else None,
                     "token_logp": round(sum(lps) / len(lps), 3) if lps else None,
                     "energy_per_decision": round(sum(ei) / len(ei)) if ei else None})
@@ -217,7 +226,7 @@ def main() -> None:
               f"game {row['game']}")
         for w in ws:
             print(f"    {w['minute']:4d}  distinct {w['distinct_ratio']:.2f}  keys {w['keys']:3d}  k80 {w['k80']:2d}  H {w['key_entropy']:.2f}  "
-                  f"dev {w['deviation']:.2f}  k/dec {w['keys_per_decision']:5.1f} uk/dec {w['distinct_keys_per_decision']:4.2f}  mouse {w['mouse_median']}  logp {w['token_logp']}  {','.join(w['flags'])}")
+                  f"dev {w['deviation']:.2f}  noop {w['noop_share']:.2f}  k/dec {w['keys_per_decision']:5.1f} uk/dec {w['distinct_keys_per_decision']:4.2f}  mouse {w['mouse_median']}  logp {w['token_logp']}  {','.join(w['flags'])}")
         if a.out:
             with open(a.out, "a") as fh:
                 fh.write(json.dumps(row) + "\n")
