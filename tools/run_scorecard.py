@@ -119,6 +119,42 @@ def game(run: Path) -> dict:
     return out
 
 
+def pauses(run: Path) -> dict:
+    """The dark-room signal: how often the policy paused the game (the game log's "Saving and pausing game" lines
+    during the run, per hour of the session), how often the watcher found it parked in the pause menu and pressed Esc,
+    and whether a hang ended the run (copied logs: game_latest.log, mc_watch.log; the game log covers the session
+    since the game's last launch)."""
+    out = {}
+    try:
+        rows = [json.loads(l) for l in open(run / "actor.jsonl")]
+        t0, t1 = rows[0]["t"], rows[-1]["t"]
+    except (OSError, IndexError, ValueError, KeyError):
+        return out
+    gl = run / "game_latest.log"
+    if gl.exists():
+        import time as _time
+        n = 0
+        for line in gl.read_text(errors="replace").splitlines():
+            if "Saving and pausing game" in line and line.startswith("["):
+                try:
+                    t = _time.mktime(_time.strptime(line[1:19], "%d%b%Y %H:%M:%S"))
+                except ValueError:
+                    continue
+                n += t0 <= t <= t1
+        out["pauses_per_h"] = round(n / max((t1 - t0) / 3600, 1e-6), 1)
+    wl = run / "mc_watch.log"
+    if wl.exists():
+        ev = []
+        for line in wl.read_text(errors="replace").splitlines():
+            try:
+                ev.append(json.loads(line))
+            except ValueError:
+                pass
+        out["esc_resumes"] = sum(1 for e in ev if str(e.get("event", "")).startswith("paused: pressed Esc"))
+        out["ended_by_hang"] = any(str(e.get("event", "")).startswith("hang:") for e in ev)
+    return out
+
+
 def trend(ws: list[dict]) -> dict:
     """Within-run trend of the play metrics: mean of the last third of the windows minus the first third."""
     if len(ws) < 3:
@@ -164,7 +200,7 @@ def main() -> None:
         row = {"run": run.name, "windows": len(ws), "healthy_windows": healthy,
                "median_deviation": devs[len(devs) // 2] if devs else None,
                "first_flag_minute": next((w["minute"] for w in ws if w["flags"]), None),
-               "game": game(run), "trend": trend(ws), "per_window": ws}
+               "game": {**game(run), **pauses(run)}, "trend": trend(ws), "per_window": ws}
         print(f"{run.name:24s} healthy {healthy}/{len(ws)} windows, median deviation {row['median_deviation']}, "
               f"first flag at minute {row['first_flag_minute']}, "
               f"game {row['game']}")

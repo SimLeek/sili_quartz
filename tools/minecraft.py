@@ -352,15 +352,51 @@ def screen_hash() -> str | None:
     return hashlib.sha1(out).hexdigest() if out else None
 
 
+PAUSE_LINE = "Saving and pausing game"
+
+
+def last_pause_time(log_tail: str) -> float | None:
+    """Unix time of the last "Saving and pausing game" line in a debug.log
+    tail (lines start "[27Nov2026 22:26:31.608]", local time), or None."""
+    t = None
+    for line in log_tail.splitlines():
+        if PAUSE_LINE in line and line.startswith("["):
+            try:
+                t = time.mktime(time.strptime(line[1:19], "%d%b%Y %H:%M:%S"))
+            except ValueError:
+                pass
+    return t
+
+
+def log_tail(n_bytes: int = 65536) -> str:
+    """The ends of the game's logs (debug.log and latest.log; the pause line can land in either)."""
+    out = []
+    for path in (LOG, LOG.with_name("latest.log")):
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(0, 2)
+                fh.seek(max(0, fh.tell() - n_bytes))
+                out.append(fh.read().decode("utf-8", "replace"))
+        except OSError:
+            pass
+    return "\n".join(out)
+
+
 def watch(poll_s: float = 0.5, relaunch_every_s: float = 10.0, wait_s: float = 240.0,
           hang_s: float = 180.0, hang_check_s: float = 15.0) -> None:
     """Keep the game up and in front: relaunch it into the world (no reset)
-    when it is not running, run focus_guard every poll, and kill the game if
-    the screen has not changed at all for hang_s (a hung game keeps its
-    process alive; the agent acts every 0.3 s, so a live game's screen moves).
+    when it is not running, and run focus_guard every poll. If the screen has
+    not changed at all for hang_s:
+    - the game was paused (a "Saving and pausing game" log line around the time
+      the screen froze): the agent chose the pause menu and stayed there (the
+      dark room). Press Esc once and count it ("paused: pressed Esc", pause_n),
+      so a policy that keeps going back shows up as a rising count;
+    - otherwise the game hung: kill it and end the run (stop the actor, so the
+      session finishes and the kill is its ending reason).
     One JSON line per event."""
     last_check = last_hang_check = 0.0
     last_hash, same_since = None, time.time()
+    pause_n = 0
     while True:
         now = time.time()
         if game_pids() and now - last_hang_check >= hang_check_s:
@@ -369,11 +405,22 @@ def watch(poll_s: float = 0.5, relaunch_every_s: float = 10.0, wait_s: float = 2
             if h is None or h != last_hash:
                 last_hash, same_since = h, now
             elif now - same_since >= hang_s:
-                print(json.dumps({"t": now, "event": f"screen unchanged for {now - same_since:.0f} s, killing the game"}),
-                      flush=True)
-                stop()
+                paused_at = last_pause_time(log_tail())
+                if paused_at is not None and paused_at >= same_since - 60:
+                    pause_n += 1
+                    ids = subprocess.run(["xdotool", "search", "--name", "^Minecraft"], capture_output=True,
+                                         text=True, env={**os.environ, **X_ENV}).stdout.split()
+                    if ids:
+                        subprocess.run(["xdotool", "key", "--window", ids[0], "Escape"], env={**os.environ, **X_ENV})
+                    print(json.dumps({"t": now, "event": "paused: pressed Esc", "pause_n": pause_n,
+                                      "paused_for_s": round(now - same_since)}), flush=True)
+                else:
+                    print(json.dumps({"t": now, "event": f"hang: screen unchanged for {now - same_since:.0f} s, "
+                                                         "killing the game and ending the run"}), flush=True)
+                    stop()
+                    subprocess.run(["pkill", "-f", "[g]amescaling_actor.py"])
+                    last_check = 0.0
                 last_hash, same_since = None, time.time()
-                last_check = 0.0
         if now - last_check >= relaunch_every_s:
             last_check = now
             if not game_pids():
