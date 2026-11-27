@@ -347,10 +347,27 @@ class ChunkTether(nn.Module):
         self.chunk, self.n_chunks, self.bank_size = chunk, n_layers // chunk, bank
         self.bx: list[Tensor | None] = [None] * self.n_chunks
         self.by: list[Tensor | None] = [None] * self.n_chunks
+        self.bc: Tensor | None = None  # chunk 1's current-frame inputs, aligned with bx[0], by[0]
 
     @staticmethod
     def _z(x: Tensor, ref: Tensor) -> Tensor:
         return (x - ref.mean(0)) / (ref.std(0) + 1e-5)
+
+    def chunk0_stats(self) -> dict | None:
+        """Chunk 1 (the one tied to the raw input), from the banks: the
+        prediction's mean and std (to standardize a new prediction), sigma2 =
+        per-dimension squared error of the standardized prediction, and
+        "ready" = its mean error is below the copy baseline's (predicting the
+        next frame's input by the current one)."""
+        if self.bx[0] is None or self.bx[0].shape[0] < 2:
+            return None
+        bx, by, bc = self.bx[0], self.by[0], self.bc
+        mx, sx = bx.mean(0), bx.std(0) + 1e-5
+        zx, zy = (bx - mx) / sx, self._z(by, by)
+        sigma2 = (zx - zy).pow(2).mean(0)
+        copy = float((self._z(bc, by) - zy).pow(2).mean())
+        return {"mean_x": mx, "std_x": sx, "sigma2": sigma2, "mse": float(sigma2.mean()), "copy_mse": copy,
+                "ready": float(sigma2.mean()) < copy}
 
     def forward(self, hs, after: list[int], runs: list[tuple[int, int]]) -> dict:
         losses, mses, copies = [], [], []
@@ -367,6 +384,9 @@ class ChunkTether(nn.Module):
             mses.append(round(float(loss), 4))
             copies.append(round(float((self._z(cur, ref_y) - yz).pow(2).mean()), 4))
             self.bx[c], self.by[c] = ref_x[-self.bank_size:], ref_y[-self.bank_size:].detach()
+            if c == 0:
+                ref_c = cur if self.bc is None else torch.cat([self.bc, cur], 0)
+                self.bc = ref_c[-self.bank_size:]
         total = torch.stack(losses).mean()
         return {"tether_loss": total, "tether_mse": float(total), "tether_copy_mse": sum(copies) / len(copies),
                 "tether_chunk_mse": mses, "tether_chunk_copy_mse": copies}

@@ -294,3 +294,33 @@ def test_output_tether_matches_the_last_chunks_layer_average_to_the_emitted_toke
     out["tether_out_loss"].backward()
     assert out["tether_out_mse"] > 0.1 and hs[n_layers].grad.abs().sum() > 0 and emitted.grad is None
     assert hs[1].grad is None  # only the last chunk is tied to the output
+
+
+def test_gaussian_capacity_is_zero_when_every_probe_predicts_the_same_and_grows_with_spread():
+    from sili_quartz.empowerment import gaussian_capacity
+
+    sigma2 = torch.ones(8)
+    same = torch.randn(1, 8).repeat(4, 1)
+    assert float(gaussian_capacity(same, sigma2)) == 0.0
+    g = torch.Generator().manual_seed(0)
+    spread = torch.randn(4, 8, generator=g)
+    small, big = float(gaussian_capacity(spread, sigma2)), float(gaussian_capacity(3 * spread, sigma2))
+    assert 0 < small < big
+    assert float(gaussian_capacity(spread, 100 * sigma2)) < small  # a worse world model claims less control
+
+
+def test_chunk0_stats_gate_opens_only_when_the_tether_beats_copying():
+    from sili_quartz.actor_objective import ChunkTether
+
+    hs, after, runs = _chunk_states(T=60)
+    tet = ChunkTether(4, chunk=2)
+    tet(hs, after, runs)
+    st = tet.chunk0_stats()
+    assert st["ready"] and st["mse"] < 1e-6 and st["sigma2"].shape == (6,)
+    # a slowly changing world (copying the current frame predicts well) and predictions unrelated to it
+    g = torch.Generator().manual_seed(3)
+    world = torch.cumsum(0.05 * torch.randn(201, 6, generator=g), 0)
+    tet2 = ChunkTether(4, chunk=2)
+    tet2.bx[0], tet2.by[0], tet2.bc = torch.randn(200, 6, generator=g), world[1:], world[:-1]
+    st2 = tet2.chunk0_stats()
+    assert not st2["ready"] and st2["copy_mse"] < 0.1 < st2["mse"]

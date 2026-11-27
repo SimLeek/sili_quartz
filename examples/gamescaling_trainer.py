@@ -28,6 +28,13 @@ on another GPU (the P40). Each step:
           [+ lambda_in * the input-share band (--health pr+in, pr+act+in): how much of
            each chunk's output still points along its input; below its floor
            the energy dose is scaled down by share / floor]
+          [--reward empower: the PPO reward is state empowerment instead of the
+           pointwise MI: K probe actions from recent play are run from the
+           window's last state, and the spread of the chunk tether's next-frame
+           predictions across them, against its own error, is the channel
+           capacity (sili_quartz/empowerment.py). It rewards the action that
+           led to that state. A poor world model has a large error and so
+           claims little control]
           [+ w_tether * the input tether (--tether head|col): the state after
            acting on frame t predicts frame t+1's mean image-token embedding,
            detached; head = a linear readout, col = each column of
@@ -66,6 +73,7 @@ from sili_quartz.actor_objective import (
 from sili_quartz.continual import (
     ContinualLoRA, RowNormBand, WeightSync, direct_params, load_checkpoint, reset_adam_state, sync_tensors, target_linears,
 )
+from sili_quartz.empowerment import state_empowerment
 from sili_quartz.gamescaling import (
     ACTION_END, MINECRAFT_KEYS, MINECRAFT_RULES, NOOP_TEXT, USER_TEXT, ActionGrammar, action_prefix_state,
     action_vocab, masked_log_probs, build_system_prompt, reasoning_probe,
@@ -158,6 +166,9 @@ def main() -> None:
     ap.add_argument("--renorm", action="store_true",
                     help="amortized magnitude health: after each merge, rescale rows of 1/8 of the Linears "
                          "back into [0.8, 1.25] x their starting norms")
+    ap.add_argument("--reward", choices=("mi", "empower"), default="mi",
+                    help="PPO reward: the pointwise MI of the arm, or state empowerment (needs --tether chunks)")
+    ap.add_argument("--probes", type=int, default=4, help="probe actions per empowerment estimate")
     ap.add_argument("--init", type=Path, default=None,
                     help="start from a trainer checkpoint, e.g. a previous run's last; the actor needs the same "
                          "--init. The health anchors (row-norm band, floors) are measured from these weights")
@@ -296,6 +307,20 @@ def main() -> None:
         turns = turn_positions(ids.tolist(), tok, prefill="<|action_start|")
         if len(turns) < 3:
             continue
+        emp, emp_st = None, None
+        if a.reward == "empower" and isinstance(tether, ChunkTether) and len(turns) == len(win):
+            emp_st = tether.chunk0_stats()
+            pool = list(dict.fromkeys(r["raw"] for r in recent if r.get("parsed")
+                                      and (r.get("raw") or "").rstrip().endswith(ACTION_END)))
+            # no gate on emp_st["ready"]: a poor world model has a large sigma2 and so claims little control
+            if emp_st is not None and len(pool) >= a.probes:
+                hist = [(Image.open(replay / f"{r['n']:06d}.jpg").convert("RGB"), assistant_content(r)) for r in win[:-1]]
+                frame = Image.open(replay / f"{win[-1]['n']:06d}.jpg").convert("RGB")
+                energy.enabled = False  # the probe measures the world model's channel, not energy's noise
+                model.eval()  # gradient checkpointing turns the cache off in train mode
+                emp, _ = state_empowerment(model, proc, system, hist, frame, random.sample(pool, a.probes),
+                                           a.tether_chunk, emp_st)
+                model.train()
         d = dose_now()
         energy.enabled = d > 0
         energy.set_dose(cost_scale=d, noise_scale=d)
@@ -345,17 +370,26 @@ def main() -> None:
             ents.append(-plp.sum(-1)[ok].mean())
             tok_lp.append(lp_tok)
         lps = torch.stack(lps)
-        reward = res["reward"]
-        r_mean = float(reward.mean()) if res["mi"] is not None else 0.0
+        # rewards by turn index: the arm's pointwise MI for every turn but the last, or the
+        # empowerment of the window's last state for the action that led to it
+        if a.reward == "mi":
+            rewards = {k: float(v) for k, v in enumerate(res["reward"])} if res["mi"] is not None else {}
+        else:
+            rewards = {len(turns) - 2: emp} if emp is not None and not warm else {}
+        r_mean = sum(rewards.values()) / len(rewards) if rewards else 0.0
         matched = 0
-        if res["mi"] is not None:
+        loss_rep = -res["mi"] if res["mi"] is not None else torch.zeros((), device=a.device)
+        loss_pg = torch.zeros((), device=a.device)
+        if rewards:
             adv_mean = 0.99 * adv_mean + 0.01 * r_mean
-            adv_var = 0.99 * adv_var + 0.01 * float(((reward - adv_mean) ** 2).mean())
-            adv = ((reward - adv_mean) / (adv_var ** 0.5 + 1e-6)).clamp(-3, 3)
+            adv_var = 0.99 * adv_var + 0.01 * sum((v - adv_mean) ** 2 for v in rewards.values()) / len(rewards)
+            adv = {k: max(-3.0, min(3.0, (v - adv_mean) / (adv_var ** 0.5 + 1e-6))) for k, v in rewards.items()}
             # PPO: per-token ratio against the log-prob the actor sampled with, on the
             # tokens it actually sampled (the end tag after '<' is filled in, not sampled)
             terms = []
             for k, t in enumerate(turns[:-1]):
+                if k not in adv:
+                    continue
                 sampled, old = win[k].get("sampled"), win[k].get("sampled_logp")
                 if not sampled or ids[t["action"][:len(sampled)]].tolist() != sampled:
                     continue
@@ -364,9 +398,6 @@ def main() -> None:
                 ratio = torch.exp(new_lp - torch.tensor(old, device=a.device))
                 terms.append(-torch.min(ratio * adv[k], ratio.clamp(1 - a.ppo_eps, 1 + a.ppo_eps) * adv[k]).mean())
             loss_pg = torch.stack(terms).mean() if terms else torch.zeros((), device=a.device)
-            loss_rep = -res["mi"]
-        else:
-            loss_pg = loss_rep = torch.zeros((), device=a.device)
         pr = participation_ratio(hs[CENTRE][0])
         lam = dual.lam
         floor = dual.floor or float(pr)
@@ -436,6 +467,9 @@ def main() -> None:
                 row["tether_chunk_copy_mse"] = tres["tether_chunk_copy_mse"]
         if ores is not None:
             row["tether_out_mse"] = round(ores["tether_out_mse"], 4)
+        if emp_st is not None:
+            row.update({"emp": None if emp is None else round(emp, 4), "emp_ready": emp_st["ready"],
+                        "chunk0_mse": round(emp_st["mse"], 4), "chunk0_copy_mse": round(emp_st["copy_mse"], 4)})
         if share is not None:
             row.update({"share": round(float(share), 4), "share_chunks": [round(float(x), 4) for x in shares],
                         "floor_in": dual_in.floor, "ceil_in": dual_in.ceiling, "lam_in": round(dual_in.lam, 4),
