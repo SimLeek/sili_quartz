@@ -163,7 +163,7 @@ Added one piece at a time, as a ladder rather than a full grid:
 | R1+E | the same columns and norm band with energy on, from the base model | FULLe_c (queued; FULL_c is its no-energy reference) |
 | R2 | state empowerment reward | built (054a1c5, `--reward empower`); offline check first (below) |
 | R3 | energy on R2 | |
-| R2h | energy-homeostasis reward (section 8) instead of, then with, empowerment | not built |
+| R2h | energy curiosity reward (section 8), before empowerment | built (17c6d50); queued after Tin3_e as Tin3_curio |
 | R4 | freeze-gated sleep | |
 
 Controls already queued, each with its prediction written down here first:
@@ -196,10 +196,32 @@ drive, where drive is how far an internal state sits from its set point.
   drive toward a "just right" amount of stimulation. Energy then becomes a
   learning signal for the policy through the output columns, not only health.
 
-It overlaps with state empowerment (both punish the dark room), so it gets its
-own rung and its own comparison. It needs an energy measure per frame for the
-input chunks (forced fires and exhausted neurons, or the energy state's
-distance from equilibrium); not built.
+**It is curiosity, and it comes before empowerment** (user). A better world
+model is what curiosity is for, and empowerment needs a world model to mean
+anything (the base and Tin_c checks: static screens scored the same as the
+open world). Energy-based curiosity avoids both classic failures:
+
+- **Too unpredictable or dangerous** (the noisy TV): over-driven neurons
+  exhaust and shut off, which raises D.
+- **Too predictable** (the couch potato): under-driven neurons need forced
+  firing, which also raises D.
+- **Neuron diversity:** lateral inhibition within a layer, a Gaussian
+  max-kernel inhibition, or a variational term would make neurons represent
+  different things, so no single static or noisy pattern keeps the whole
+  input side engaged. That is a variant to add if the couch-potato failure
+  shows up.
+
+**Built** (17c6d50, `--reward energy`):
+
+- D(frame) is the share of the MLP and attention neurons in layers 1–12 that
+  energy forced to fire or shut off, averaged over the frame's image tokens.
+- The PPO reward for action k is D(frame k) − D(frame k+1).
+- Energy at a fixed dose of 1 on the interior and input neurons, none on the
+  action choice, with the tether on layers 1–12.
+- **Caveat:** energy self-corrects over time. Holding the energy state fixed
+  when measuring the next frame would credit only the action's consequence.
+  It is not done in v1; each frame is measured on its own tokens as it
+  arrives.
 
 ## Where the literature runs out
 
