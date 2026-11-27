@@ -16,10 +16,14 @@ Per 10-minute window, from the parsed decisions:
 Game, from the stats log: play minutes, deaths, blocks mined, items picked up,
 metres travelled, per hour of play.
 
-Health flags against the reference run's own windows (outside the
-reference's min..max range): "loops", "mashing", "collapsed keys",
-"spread keys". A run with no flags in a window plays like the reference
-there.
+Against the reference run (the untouched model with grammar, Root_g):
+- deviation: per window, the mean relative distance from the reference's mean
+  over distinct ratio, keys, k80, key entropy, distinct keys per decision and
+  mouse; the run's median deviation orders nodes;
+- severe flags, for a metric at least 50 % off in the failing direction:
+  "loops" (distinct ratio), "collapsed keys" (k80 or keys), "spread keys"
+  (k80 or keys doubled), "mashing" (distinct keys per decision doubled, or
+  mouse tripled). A healthy window has no severe flag.
 """
 
 from __future__ import annotations
@@ -100,33 +104,36 @@ def main() -> None:
     ap.add_argument("--minutes", type=int, default=10, help="window length")
     a = ap.parse_args()
     ref = windows(a.ref, a.minutes)
-    rng = {f: (min(w[f] for w in ref), max(w[f] for w in ref))
-           for f in ("distinct_ratio", "keys", "key_entropy", "distinct_keys_per_decision")}
-    mouse = [w["mouse_median"] for w in ref if w["mouse_median"] is not None]
-    rng["mouse_median"] = (min(mouse), max(mouse))
+    METRICS = ("distinct_ratio", "keys", "k80", "key_entropy", "distinct_keys_per_decision", "mouse_median")
+    mean = {f: sum((w[f] or 0) for w in ref) / len(ref) for f in METRICS}
     for run in [a.ref] + list(a.runs):
         ws = windows(run, a.minutes)
         for w in ws:
+            rel = {f: ((w[f] or 0) - mean[f]) / mean[f] if mean[f] else 0.0 for f in METRICS}
+            # graded: mean relative distance from the reference; flags only for metrics >= 50 % off, in the failing direction
+            w["deviation"] = round(sum(abs(v) for v in rel.values()) / len(rel), 3)
             flags = []
-            if w["distinct_ratio"] < rng["distinct_ratio"][0]:
+            if rel["distinct_ratio"] <= -0.5:
                 flags.append("loops")
-            if w["keys"] < rng["keys"][0] or w["key_entropy"] < rng["key_entropy"][0]:
+            if rel["k80"] <= -0.5 or rel["keys"] <= -0.5:
                 flags.append("collapsed keys")
-            if w["keys"] > rng["keys"][1] or w["key_entropy"] > rng["key_entropy"][1]:
+            if rel["k80"] >= 1.0 or rel["keys"] >= 1.0:
                 flags.append("spread keys")
-            if (w["mouse_median"] or 0) > rng["mouse_median"][1] or \
-                    w["distinct_keys_per_decision"] > rng["distinct_keys_per_decision"][1]:
+            if rel["distinct_keys_per_decision"] >= 1.0 or rel["mouse_median"] >= 2.0:
                 flags.append("mashing")
             w["flags"] = flags
         healthy = sum(1 for w in ws if not w["flags"])
+        devs = sorted(w["deviation"] for w in ws)
         row = {"run": run.name, "windows": len(ws), "healthy_windows": healthy,
+               "median_deviation": devs[len(devs) // 2] if devs else None,
                "first_flag_minute": next((w["minute"] for w in ws if w["flags"]), None),
                "game": game(run), "per_window": ws}
-        print(f"{run.name:24s} healthy {healthy}/{len(ws)} windows, first flag at minute {row['first_flag_minute']}, "
+        print(f"{run.name:24s} healthy {healthy}/{len(ws)} windows, median deviation {row['median_deviation']}, "
+              f"first flag at minute {row['first_flag_minute']}, "
               f"game {row['game']}")
         for w in ws:
             print(f"    {w['minute']:4d}  distinct {w['distinct_ratio']:.2f}  keys {w['keys']:3d}  k80 {w['k80']:2d}  H {w['key_entropy']:.2f}  "
-                  f"k/dec {w['keys_per_decision']:5.1f} uk/dec {w['distinct_keys_per_decision']:4.2f}  mouse {w['mouse_median']}  logp {w['token_logp']}  {','.join(w['flags'])}")
+                  f"dev {w['deviation']:.2f}  k/dec {w['keys_per_decision']:5.1f} uk/dec {w['distinct_keys_per_decision']:4.2f}  mouse {w['mouse_median']}  logp {w['token_logp']}  {','.join(w['flags'])}")
         if a.out:
             with open(a.out, "a") as fh:
                 fh.write(json.dumps(row) + "\n")

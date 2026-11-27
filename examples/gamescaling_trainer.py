@@ -240,6 +240,7 @@ def main() -> None:
     band = RowNormBand(linears) if a.renorm else None
     tether_out = OutputTether(n_layers, chunk=a.tether_chunk) if a.tether_out else None
     cov_ctl = CovControl(a.cov, k=a.cov_k, seed=a.seed) if a.cov != "none" else None
+    drive_base: dict[int, tuple[int, float]] = {}  # frame position -> (count, sum of drive reductions)
     image_token = model.config.image_token_id
     opt = torch.optim.AdamW([
         {"params": list(lora.parameters()), "lr": a.lr},
@@ -420,7 +421,15 @@ def main() -> None:
         if a.reward == "mi":
             rewards = {k: float(v) for k, v in enumerate(res["reward"])} if res["mi"] is not None else {}
         elif a.reward == "energy":
-            rewards = {k: drives[k] - drives[k + 1] for k in range(len(turns) - 1)} if drives and not warm else {}
+            rewards = {}
+            if drives and not warm:
+                # the trainer's energy starts at rest each window, so the drive builds up with the frame's
+                # position; subtract each position's running mean drive reduction so only what happened counts
+                for k in range(len(turns) - 1):
+                    diff = drives[k] - drives[k + 1]
+                    n_k, s_k = drive_base.get(k, (0, 0.0))
+                    rewards[k] = diff - (s_k / n_k if n_k else diff)
+                    drive_base[k] = (n_k + 1, s_k + diff)
         else:
             rewards = {len(turns) - 2: emp} if emp is not None and not warm else {}
         r_mean = sum(rewards.values()) / len(rewards) if rewards else 0.0
