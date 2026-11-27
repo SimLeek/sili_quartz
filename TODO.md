@@ -220,8 +220,11 @@ smallest controller that sets the dose, working before 3 and 4.
   - `--tether head`: the centre state after acting on frame t predicts frame
     t+1's mean image-token input (detached) through a linear readout;
     representation loss only, never a reward, so pausing is not paid for.
-  - `--tether col`: the same with no readout: the state itself must match
-    (one state neuron per input dimension at this width).
+  - `--tether col`: neural columns, no readout: the state's neurons in
+    columns of 8, each column's average matches one value of the input
+    (reduced from 1024 to 128 values by a fixed random orthogonal projection,
+    since the state is no wider than the input here). A column of one neuron
+    would only copy the input (user).
   - Energy self-maintenance instead of a loss: energy on input-driven state
     holding its setpoint has to anticipate the input. The energy-only arm
     (Eio_fixed1g) tests this; scored by the probe below.

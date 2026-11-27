@@ -263,16 +263,24 @@ class InputTether(nn.Module):
     a reward: it ties the state to the world without paying the policy to make
     the world predictable.
 
-    mode "head": a trainer-side linear readout of the state.
-    mode "col":  no readout; the state itself, standardized per dimension, must
-                 match (the input and the state are the same width here, so each
-                 input dimension is a column of one state neuron)."""
+    mode "head": a trainer-side linear readout of the state predicts the input.
+    mode "col":  neural columns, no readout. The state's neurons are grouped in
+                 columns of `col_size`; each column's average must match one
+                 value of the input, reduced to d_model / col_size values by a
+                 fixed random orthogonal projection (not trained)."""
 
-    def __init__(self, mode: str = "head", d_model: int = 1024, bank: int = 1024):
+    def __init__(self, mode: str = "head", d_model: int = 1024, bank: int = 1024, col_size: int = 8,
+                 seed: int = 0):
         super().__init__()
         assert mode in ("head", "col")
         self.mode = mode
         self.head = nn.Linear(d_model, d_model) if mode == "head" else None
+        self.col_size = col_size
+        if mode == "col":
+            assert d_model % col_size == 0
+            g = torch.Generator().manual_seed(seed)
+            q, _ = torch.linalg.qr(torch.randn(d_model, d_model // col_size, generator=g))
+            self.register_buffer("reduce", q)  # (d_model, n_columns), orthonormal columns
         self.bank_size = bank
         self.targets: Tensor | None = None
         self.states: Tensor | None = None
@@ -284,8 +292,11 @@ class InputTether(nn.Module):
     def forward(self, state: Tensor, target: Tensor) -> dict:
         """state: (T, d) after acting on each frame; target: (T, d) each frame's
         input. Pairs (state_t, target_t+1)."""
-        x, y = state[:-1].float(), target[1:].detach().float()
-        cur = target[:-1].detach().float()
+        x, tg = state[:-1].float(), target.detach().float()
+        if self.head is None:
+            tg = tg @ self.reduce
+            x = x.reshape(x.shape[0], -1, self.col_size).mean(-1)  # each column's average
+        y, cur = tg[1:], tg[:-1]
         ref_y = y if self.targets is None else torch.cat([self.targets, y], 0)
         yz = self._z(y, ref_y)
         if self.head is not None:

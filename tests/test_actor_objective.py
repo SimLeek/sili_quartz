@@ -160,17 +160,24 @@ def test_input_tether_trains_the_state_or_head_and_never_the_target():
         assert target.grad is None  # detached: the input cannot move toward the prediction
         if mode == "head":
             assert tet.head.weight.grad is not None
-        assert tet.targets.shape == (5, 16) and math.isfinite(out["tether_copy_mse"])
+        assert tet.targets.shape[0] == 5 and math.isfinite(out["tether_copy_mse"])
 
 
-def test_input_tether_col_mode_is_zero_when_the_state_holds_the_next_input():
+def test_input_tether_col_mode_matches_column_averages_and_leaves_the_rest_free():
     from sili_quartz.actor_objective import InputTether
 
     torch.manual_seed(1)
-    seq = torch.randn(40, 8)
-    tet = InputTether("col", d_model=8, bank=1000)
-    out = tet(seq[1:], seq[:-1])  # state_t = input_t+1
-    assert out["tether_mse"] < 1e-6
+    inp = torch.randn(40, 16)
+    reduce = InputTether("col", d_model=16, col_size=8).reduce
+    cols = inp @ reduce  # (40, 2): the value each column's average must match
+    # state_t: columns averaging to input_t+1's values, plus anything that averages to 0
+    free = torch.randn(40, 2, 8)
+    free = free - free.mean(-1, keepdim=True)
+    nxt = torch.cat([cols[1:], torch.zeros(1, 2)])
+    state = (nxt[:, :, None] + free).reshape(40, 16)
+    assert InputTether("col", d_model=16, bank=1000, col_size=8)(state, inp)["tether_mse"] < 1e-6
+    shuffled = inp[torch.randperm(40)]
+    assert InputTether("col", d_model=16, bank=1000, col_size=8)(state, shuffled)["tether_mse"] > 0.1
 
 
 def test_image_means_takes_each_turns_own_image_run():

@@ -19,7 +19,9 @@ on another GPU (the P40). Each step:
           [+ the self-prediction loss for A1+self]
           [+ w_tether * the input tether (--tether head|col): the state after
            acting on frame t predicts frame t+1's mean image-token embedding,
-           detached; a representation loss, never a reward];
+           detached; head = a linear readout, col = each column of
+           --tether-col-size neurons averages to one value of the input;
+           a representation loss, never a reward];
    log pi is over the actor's own restricted action vocabulary;
 4. every `--merge-every` steps: merge the adapters into the weights, write a
    sync packet (exact fp16 diffs) and the dose for the actor (dose.json).
@@ -133,8 +135,9 @@ def main() -> None:
                          "the entropy")
     ap.add_argument("--tether", choices=("none", "head", "col"), default="none",
                     help="input tether: the centre state after acting predicts the next frame's input "
-                         "(head: linear readout; col: the state itself, no readout)")
+                         "(head: linear readout; col: neural columns, each column's average matches one value)")
     ap.add_argument("--w-tether", type=float, default=1.0)
+    ap.add_argument("--tether-col-size", type=int, default=8, help="neurons per column for --tether col")
     ap.add_argument("--merge-every", type=int, default=8)
     ap.add_argument("--seconds", type=float, default=0.0)
     ap.add_argument("--steps", type=int, default=0)
@@ -168,7 +171,7 @@ def main() -> None:
     for p in direct.values():
         p.requires_grad_(True)
     pi = PredictiveInfo(a.arm).to(a.device)
-    tether = InputTether(a.tether).to(a.device) if a.tether != "none" else None
+    tether = InputTether(a.tether, col_size=a.tether_col_size, seed=a.seed).to(a.device) if a.tether != "none" else None
     image_token = model.config.image_token_id
     opt = torch.optim.AdamW([
         {"params": list(lora.parameters()), "lr": a.lr},
