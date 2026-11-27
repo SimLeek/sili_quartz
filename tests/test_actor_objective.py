@@ -377,3 +377,16 @@ def test_energy_states_round_trip_so_a_replay_starts_where_the_actor_was():
     assert torch.equal(from_snap.apply(0, quiet[:, :3]), a_out)  # same state, same output
     from_rest.apply(0, quiet[:, :3])
     assert from_snap.intervened_count() > from_rest.intervened_count() == 0.0
+
+
+def test_intervened_counts_held_shut_offs_too():
+    from sili_quartz.energy_scan import ScanEnergy, ScanSite
+
+    en = ScanEnergy([ScanSite(torch.nn.Identity(), mean=1.0, cost=0.5)], decay_div=40.0)
+    en.trace_sites = {0}
+    en.set_dose(cost_scale=1.0, noise_scale=0.0)
+    loud = torch.full((1, 60, 4), 3.0)  # far above the mean: shut off, then held shut
+    en.apply(0, loud)
+    tr = en.trace[0]
+    first = int((tr > 0).nonzero()[0])
+    assert float(tr[first:].min()) == 1.0  # every token after the first shut-off counts

@@ -186,9 +186,12 @@ class ScanEnergy:
         gate, const = energy_scan(x.detach(), self.states[i], noise, self.doses[i], site.scale)
         out = x * gate + const
         self.fired[i].add_((gate == 0).sum())
-        self.intervened[i].add_((const != 0).sum())
+        # forced to fire (const 2) or shut off while active; a held shut-off has const 0, so the
+        # gate and the activity tell it apart from the dead zone
+        hit = (const != 0) | ((gate == 0) & (x.detach().abs() / site.scale > ACTIVATION_THRESHOLD))
+        self.intervened[i].add_(hit.sum())
         if self.trace_sites is not None and i in self.trace_sites and b == 1 and not one_step:
-            self.trace[i] = (const != 0).float().mean(-1).detach()
+            self.trace[i] = hit.float().mean(-1).detach()
         out = out.reshape(t, b, n).transpose(0, 1)
         return out[:, 0] if one_step else out
 
