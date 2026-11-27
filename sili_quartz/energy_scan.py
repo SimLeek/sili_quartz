@@ -119,6 +119,10 @@ class ScanEnergy:
         self.doses: list[Tensor | None] = [None] * len(sites)
         self.fired: list[Tensor | None] = [None] * len(sites)  # running device counters
         self.mult = (1.0, 1.0, 1.0)
+        # trace_sites: record, per call, the share of each position's neurons that energy
+        # forced to fire or shut off (batch 1), in trace[site] (T,); None = off
+        self.trace_sites: set[int] | None = None
+        self.trace: dict[int, Tensor] = {}
         # training mode (begin_step): each call restarts from the step's saved
         # state with the step's noise, so a checkpointed layer's recompute in
         # backward gives exactly the forward's output
@@ -180,6 +184,8 @@ class ScanEnergy:
         gate, const = energy_scan(x.detach(), self.states[i], noise, self.doses[i], site.scale)
         out = x * gate + const
         self.fired[i].add_((gate == 0).sum())
+        if self.trace_sites is not None and i in self.trace_sites and b == 1 and not one_step:
+            self.trace[i] = (const != 0).float().mean(-1).detach()
         out = out.reshape(t, b, n).transpose(0, 1)
         return out[:, 0] if one_step else out
 

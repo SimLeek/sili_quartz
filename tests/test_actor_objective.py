@@ -336,3 +336,23 @@ def test_chunk_tether_can_leave_the_chunks_nearest_the_output_untouched():
     assert len(out["tether_chunk_mse"]) == 1
     assert hs[1].grad.abs().sum() > 0 and hs[2].grad.abs().sum() > 0
     assert hs[3].grad is None and hs[4].grad is None  # the output-side chunk gets nothing
+
+
+def test_energy_trace_records_the_share_of_intervened_neurons_per_position_and_drive_averages_frames():
+    from sili_quartz.actor_objective import energy_drive
+    from sili_quartz.energy_scan import ScanEnergy, ScanSite
+
+    lin = torch.nn.Identity()
+    en = ScanEnergy([ScanSite(lin, mean=1.0, cost=0.5)], decay_div=40.0)
+    en.trace_sites = {0}
+    en.set_dose(cost_scale=1.0, noise_scale=0.0)
+    # quiet inputs: drive builds up and neurons get forced to fire; loud inputs: cost shuts them off
+    quiet = torch.zeros(1, 40, 8)
+    loud = torch.full((1, 40, 8), 50.0)
+    out = en.apply(0, torch.cat([quiet, loud], 1))
+    tr = en.trace[0]
+    assert tr.shape == (80,) and float(tr.min()) >= 0 and float(tr.max()) <= 1
+    assert float(tr[:40].sum()) > 0 and float(tr[40:].sum()) > 0  # forced firing, then shut-offs
+    d = energy_drive(en.trace, [(0, 40), (40, 80)])
+    assert len(d) == 2 and all(0 <= x <= 1 for x in d)
+    assert out.shape == (1, 80, 8)

@@ -423,6 +423,15 @@ class OutputTether(nn.Module):
         return {"tether_out_loss": loss, "tether_out_mse": float(loss)}
 
 
+def energy_drive(trace: dict, runs: list[tuple[int, int]]) -> list[float]:
+    """Homeostatic drive per frame: the share of the traced neurons (ScanEnergy.trace,
+    site -> (T,)) that energy had to force or shut off, averaged over the frame's
+    image tokens and the sites. High when under-driven (a static screen: forced
+    firing) and when over-driven (chaos: shut-offs)."""
+    sites = list(trace.values())
+    return [float(sum(t[a:b].mean() for t in sites) / len(sites)) for a, b in runs]
+
+
 def input_share(hs, chunk: int) -> Tensor:
     """Per chunk: how much of the chunk's output still points along its input,
     cos^2(mean of the chunk's layer outputs, chunk input), averaged over tokens.

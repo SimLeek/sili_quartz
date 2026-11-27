@@ -67,7 +67,7 @@ import torch
 from PIL import Image
 
 from sili_quartz.actor_objective import (
-    Boredom, ChunkTether, Dual, InputTether, OutputTether, PredictiveInfo, choice_columns, image_means, image_runs, input_share, make_energy, measure_io_means, measure_site_means,
+    Boredom, ChunkTether, Dual, InputTether, OutputTether, energy_drive, PredictiveInfo, choice_columns, image_means, image_runs, input_share, make_energy, measure_io_means, measure_site_means,
     output_energy, participation_ratio, turn_positions,
 )
 from sili_quartz.continual import (
@@ -175,8 +175,12 @@ def main() -> None:
     ap.add_argument("--renorm", action="store_true",
                     help="amortized magnitude health: after each merge, rescale rows of 1/8 of the Linears "
                          "back into [0.8, 1.25] x their starting norms")
-    ap.add_argument("--reward", choices=("mi", "empower"), default="mi",
-                    help="PPO reward: the pointwise MI of the arm, or state empowerment (needs --tether chunks)")
+    ap.add_argument("--reward", choices=("mi", "empower", "energy"), default="mi",
+                    help="PPO reward: the pointwise MI of the arm; state empowerment (needs --tether chunks); "
+                         "or energy curiosity: the drive reduction D(frame k) - D(frame k+1), D = share of the "
+                         "input-side neurons energy forced or shut off on the frame (needs a fixed dose > 0)")
+    ap.add_argument("--reward-layers", type=int, default=12,
+                    help="--reward energy: the first N layers' MLP and attention sites are the input side")
     ap.add_argument("--probes", type=int, default=4, help="probe actions per empowerment estimate")
     ap.add_argument("--init", type=Path, default=None,
                     help="start from a trainer checkpoint, e.g. a previous run's last; the actor needs the same "
@@ -275,9 +279,14 @@ def main() -> None:
             mlp_means, attn_means = measure_site_means(model, lambda: model(**first, logits_to_keep=1))
             io_means = measure_io_means(model, lambda: model(**first, logits_to_keep=1)) if a.energy_io else None
     cols = choice_columns(tok, vocab.tolist()) if a.energy_io and a.energy_io_side == "both" else []
+    if a.reward == "energy":
+        assert a.dose.startswith("fixed:") and float(a.dose.split(":")[1]) > 0, "--reward energy needs --dose fixed:x"
     cols_t = torch.tensor(cols, device=a.device)
     energy = make_energy(model, mlp_means, attn_means, io_means=io_means if a.energy_io else None,
                          n_choice=len(cols))
+    if a.reward == "energy":  # sites: MLP outputs per layer, then attention outputs per layer
+        nl = len(mlp_means)
+        energy.trace_sites = set(range(a.reward_layers)) | {nl + j for j in range(a.reward_layers)}
     adv_mean, adv_var, step, t_start = 0.0, 1.0, 0, time.time()
     last_ckpt = t_start
     last_probe = 0.0
@@ -381,8 +390,14 @@ def main() -> None:
         lps = torch.stack(lps)
         # rewards by turn index: the arm's pointwise MI for every turn but the last, or the
         # empowerment of the window's last state for the action that led to it
+        drives = None
+        if a.reward == "energy" and energy.trace:
+            drives = energy_drive(energy.trace, image_runs(ids.tolist(), image_token, [t["state"] for t in turns]))
+            energy.trace = {}
         if a.reward == "mi":
             rewards = {k: float(v) for k, v in enumerate(res["reward"])} if res["mi"] is not None else {}
+        elif a.reward == "energy":
+            rewards = {k: drives[k] - drives[k + 1] for k in range(len(turns) - 1)} if drives and not warm else {}
         else:
             rewards = {len(turns) - 2: emp} if emp is not None and not warm else {}
         r_mean = sum(rewards.values()) / len(rewards) if rewards else 0.0
@@ -476,6 +491,8 @@ def main() -> None:
                 row["tether_chunk_copy_mse"] = tres["tether_chunk_copy_mse"]
         if ores is not None:
             row["tether_out_mse"] = round(ores["tether_out_mse"], 4)
+        if drives is not None:
+            row["drive"] = [round(x, 4) for x in drives]
         if emp_st is not None:
             row.update({"emp": None if emp is None else round(emp, 4), "emp_ready": emp_st["ready"],
                         "chunk0_mse": round(emp_st["mse"], 4), "chunk0_copy_mse": round(emp_st["copy_mse"], 4)})
