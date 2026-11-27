@@ -88,7 +88,20 @@ Two caveats:
   toward its own choices; the logged entropy will show that.
 
 Being a representation loss, the tether pays the policy nothing for a static
-world. It adds no dark-room incentive.
+world through its gradient. **That holds only while the output side is left
+alone** (correction, Tin_c, 2026-11-27).
+
+- **What went wrong:** with all six chunks tethered, the features the action
+  head reads are trained to predict the next input. The policy becomes a
+  by-product of input prediction.
+- **Why it reaches a dark room:** actions change the next input, and
+  features that predict the next input fit best when the actions do not
+  change it. That is a dark room reached through the shared representation,
+  not through a reward.
+- **Observed:** Tin_c sat on its death screen, confident (log-prob −0.31,
+  against −0.52 at the start), no clicks, mouse moves of 2–4.
+- **Fix:** tether only the input-side chunks (`--tether-chunks 3`, layers
+  1–12) and leave the output side to a policy.
 
 ## 4. What the column averaging guarantees
 
