@@ -13,6 +13,9 @@ A research write-up in paper order. Each part is written when its stage is done.
    - [Track A objectives: what the math says](track-a-objective-math.md),
      2026-11-27: why the MI arms found static screens, why our A2 rewards
      randomness, why the input tether is a real bound, and the ladder of arms.
+   - [Track A: required pieces](track-a-required-pieces.md), a ledger started
+     2026-11-27: required, keep off, plausible, measurement, rejected, each with
+     its evidence. Updated as results come in.
 3. Results: not yet. Raw results also go in `docs/results/`, as before.
 4. Conclusion: not yet.
 
