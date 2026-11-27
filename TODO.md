@@ -257,7 +257,10 @@ smallest controller that sets the dose, working before 3 and 4.
     ("I must get wood." -> "have wood, crafting table") carried in context and
     trained with the RL policy. That costs ~50-100 ms per decision, not the
     1-2 s of the base model's 50-200-token rationales, and gives the policy a
-    persistent intent. First: `tools/thought_influence.py` measures whether the
+    persistent intent. **The thought length is a knob to test** (user: 5-8
+    tokens, "maybe a few more"): sweep it, e.g. 8 / 16 / 32 tokens, and report
+    worst-case regret across the range rather than one tuned value.
+    First: `tools/thought_influence.py` measures whether the
     base model's thoughts change its actions at all.
   - Every arm is scored by `tools/world_model_probe.py`: ridge from the
     trained state to the untouched model's next-frame input on one fixed
