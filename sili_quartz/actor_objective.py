@@ -341,10 +341,13 @@ class ChunkTether(nn.Module):
     hs: hidden states as the model returns them, hs[i] = input of layer i,
     hs[i + 1] = its output."""
 
-    def __init__(self, n_layers: int, chunk: int = 4, bank: int = 1024):
+    def __init__(self, n_layers: int, chunk: int = 4, bank: int = 1024, n_tethered: int | None = None):
+        """n_tethered: tether only the first n chunks (the input side), leaving the
+        chunks nearest the output to the policy; default all."""
         super().__init__()
         assert n_layers % chunk == 0
-        self.chunk, self.n_chunks, self.bank_size = chunk, n_layers // chunk, bank
+        self.chunk, self.bank_size = chunk, bank
+        self.n_chunks = n_layers // chunk if n_tethered is None else min(n_tethered, n_layers // chunk)
         self.bx: list[Tensor | None] = [None] * self.n_chunks
         self.by: list[Tensor | None] = [None] * self.n_chunks
         self.bc: Tensor | None = None  # chunk 1's current-frame inputs, aligned with bx[0], by[0]

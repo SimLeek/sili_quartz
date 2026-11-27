@@ -164,6 +164,9 @@ def main() -> None:
     ap.add_argument("--tether-col-size", type=int, default=8, help="neurons per column for --tether col")
     ap.add_argument("--tether-chunk", type=int, default=4,
                     help="layers per chunk for --tether chunks and the input-share guard")
+    ap.add_argument("--tether-chunks", type=int, default=None,
+                    help="tether only the first N chunks, counting from the input side (default all); the "
+                         "chunks nearest the output are left to the policy")
     ap.add_argument("--tether-out", action="store_true",
                     help="output tether: the last chunk's layer average matches each emitted action token")
     ap.add_argument("--w-tether-out", type=float, default=None,
@@ -215,7 +218,7 @@ def main() -> None:
     pi = PredictiveInfo(a.arm).to(a.device)
     n_layers = len(model.model.language_model.layers)
     if a.tether == "chunks":
-        tether = ChunkTether(n_layers, chunk=a.tether_chunk).to(a.device)
+        tether = ChunkTether(n_layers, chunk=a.tether_chunk, n_tethered=a.tether_chunks).to(a.device)
     elif a.tether != "none":
         tether = InputTether(a.tether, col_size=a.tether_col_size, seed=a.seed).to(a.device)
     else:

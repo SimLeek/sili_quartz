@@ -324,3 +324,15 @@ def test_chunk0_stats_gate_opens_only_when_the_tether_beats_copying():
     tet2.bx[0], tet2.by[0], tet2.bc = torch.randn(200, 6, generator=g), world[1:], world[:-1]
     st2 = tet2.chunk0_stats()
     assert not st2["ready"] and st2["copy_mse"] < 0.1 < st2["mse"]
+
+
+def test_chunk_tether_can_leave_the_chunks_nearest_the_output_untouched():
+    from sili_quartz.actor_objective import ChunkTether
+
+    hs, after, runs = _chunk_states()
+    hs = [h.clone().requires_grad_(True) for h in hs]
+    out = ChunkTether(4, chunk=2, n_tethered=1)(hs, after, runs)
+    out["tether_loss"].backward()
+    assert len(out["tether_chunk_mse"]) == 1
+    assert hs[1].grad.abs().sum() > 0 and hs[2].grad.abs().sum() > 0
+    assert hs[3].grad is None and hs[4].grad is None  # the output-side chunk gets nothing
