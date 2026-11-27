@@ -268,6 +268,25 @@ class ActionGrammar:
         return torch.tensor(self.allowed(text, made), dtype=torch.bool, device=device)
 
 
+MASKED_LOGIT = -1e4  # finite: a -inf fill gives exp(lp) * lp = 0 * -inf = NaN in backward
+
+
+def masked_log_probs(logits, allowed=None):
+    """(log p, p log p) over the last dim, restricted to `allowed` (bool, same
+    shape) when given. Masked entries get log p = MASKED_LOGIT-ish and
+    p log p = 0, both with finite gradients; the distribution over allowed
+    tokens matches a -inf mask exactly in fp32."""
+    import torch
+
+    if allowed is not None:
+        logits = logits.masked_fill(~allowed, MASKED_LOGIT)
+    lp = torch.log_softmax(logits, -1)
+    plp = lp.exp() * lp
+    if allowed is not None:
+        plp = torch.where(allowed, plp, torch.zeros_like(plp))
+    return lp, plp
+
+
 # -- policy (model card section 4) --------------------------------------------------------
 
 USER_TEXT = "current game screen"

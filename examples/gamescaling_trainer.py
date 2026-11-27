@@ -52,7 +52,7 @@ from sili_quartz.continual import (
 )
 from sili_quartz.gamescaling import (
     ACTION_END, MINECRAFT_KEYS, MINECRAFT_RULES, NOOP_TEXT, USER_TEXT, ActionGrammar, action_prefix_state,
-    action_vocab, build_system_prompt, reasoning_probe,
+    action_vocab, masked_log_probs, build_system_prompt, reasoning_probe,
 )
 
 CENTRE, REGION_A, REGION_B = 13, 7, 19  # hidden_states index = layer index + 1
@@ -274,14 +274,10 @@ def main() -> None:
             tgt = vocab_index[ids[pos]]
             ok = tgt >= 0
             rows_ = torch.tensor([row_of[int(p) - 1] for p in t["action"]], device=a.device)
-            if grammar is not None:
-                allowed = turn_mask(grammar, tgt.tolist()).to(a.device)
-                lp_all = torch.log_softmax(act_logits[rows_].masked_fill(~allowed, float("-inf")), -1)
-                plp = torch.where(allowed, lp_all.exp() * lp_all, torch.zeros_like(lp_all))
+            allowed = turn_mask(grammar, tgt.tolist()).to(a.device) if grammar is not None else None
+            lp_all, plp = masked_log_probs(act_logits[rows_], allowed)
+            if allowed is not None:
                 lp_all = lp_all.clamp(min=-30.0)  # a target outside the mask (never sampled so) stays finite
-            else:
-                lp_all = torch.log_softmax(act_logits[rows_], -1)
-                plp = lp_all.exp() * lp_all
             lp_tok = torch.where(ok, lp_all.gather(1, tgt.clamp(min=0)[:, None])[:, 0], torch.zeros_like(tgt, dtype=torch.float))
             lps.append(lp_tok[ok].mean())
             ents.append(-plp.sum(-1)[ok].mean())

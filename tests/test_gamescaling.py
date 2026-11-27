@@ -220,3 +220,19 @@ def test_grammar_masks_the_real_action_vocab_and_keeps_the_noop_reachable():
             break
         assert g.allowed(text, j)[vocab.index(t)], (text, tok.decode([t]))
         text += g.strings[vocab.index(t)]
+
+
+def test_masked_log_probs_entropy_and_target_have_finite_gradients():
+    torch = pytest.importorskip("torch")
+    from sili_quartz.gamescaling import masked_log_probs
+
+    logits = torch.randn(5, 7, requires_grad=True)
+    allowed = torch.rand(5, 7) > 0.5
+    allowed[:, 0] = True
+    lp, plp = masked_log_probs(logits, allowed)
+    loss = -plp.sum(-1).mean() + lp[:, 0].mean()
+    loss.backward()
+    assert torch.isfinite(logits.grad).all()
+    assert torch.all(plp[~allowed] == 0)
+    ref = torch.log_softmax(logits.detach().masked_fill(~allowed, float("-inf")), -1)
+    assert torch.allclose(lp.detach()[allowed], ref[allowed], atol=1e-6)
