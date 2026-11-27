@@ -185,6 +185,89 @@ def action_vocab(tokenizer, samples: int = 4000, seed: int = 0) -> list[int]:
     return sorted(ids)
 
 
+_NUM_PARTIAL = re.compile(r"[-+]?(?:\d{1,4}(?:\.\d{0,2})?)?")  # no dead ends: a digit before any "."
+_NUM_FULL = re.compile(r"[-+]?\d{1,4}(?:\.\d{1,2})?")
+_KEY_PREFIXES = frozenset(k[:i] for k in KEY_VOCAB for i in range(1, len(k) + 1))
+
+
+def action_prefix_state(s: str) -> str | None:
+    """s: decoded text after the '<|action_start|' prefill. None if no valid
+    action starts with s, 'done' if s is a complete action (it ends in the
+    start of the end tag), else 'open'. Valid: '>' X Y Z ';' then up to STEPS
+    ';'-separated groups of at most 4 known keys, closed by '<'."""
+    if not s:
+        return "open"
+    if s[0] != ">" or "    " in s:  # runs of 4+ spaces only spend the token budget
+        return None
+    r = s[1:]
+    head, semi, rest = r.partition(";")
+    if any(c not in "0123456789-+. " for c in head):
+        return None
+    nums = head.split()
+    closed = nums if head.endswith(" ") else nums[:-1]  # numbers already ended by a space
+    if len(nums) > 3 or not all(_NUM_PARTIAL.fullmatch(n) for n in nums) or \
+            not all(_NUM_FULL.fullmatch(n) for n in closed):
+        return None
+    if not semi:
+        return "open"
+    if len(nums) != 3 or not all(_NUM_FULL.fullmatch(n) for n in nums):
+        return None
+    body, lt, tag = rest.partition("<")
+    if body.count(";") > STEPS - 1:
+        return None
+    for group in body.split(";"):
+        if any(not (c.isalnum() or c == " ") for c in group):
+            return None
+        words = group.split()
+        if len(words) > 4:
+            return None
+        closed = words if group.endswith(" ") or not words else words[:-1]
+        if any(w not in KEY_VOCAB for w in closed) or (words and words[-1] not in _KEY_PREFIXES):
+            return None
+    # a word still being typed when the group closes must be a whole key
+    for group in body.split(";")[:-1] + ([body.split(";")[-1]] if lt else []):
+        if group.split() and group.split()[-1] not in KEY_VOCAB:
+            return None
+    if not lt:
+        return "open"
+    return "done" if ACTION_END.startswith("<" + tag) else None
+
+
+class ActionGrammar:
+    """Masks the action vocabulary so every sampled completion parses: a
+    token is allowed if the text stays a prefix of a valid action. Sampling
+    under the mask is the model's distribution conditioned on the format;
+    the trainer applies the same mask, so PPO's ratio and the entropy are
+    over the same distribution the actor sampled from."""
+
+    def __init__(self, tokenizer, vocab: list[int], max_new_tokens: int = 64):
+        self.strings = [tokenizer.decode([t], skip_special_tokens=False) for t in vocab]
+        self.end_ok = [s.lstrip(" ").startswith("<") and ACTION_END.startswith(s.lstrip(" ")) for s in self.strings]
+        self.max_new_tokens = max_new_tokens
+        self._cache: dict[tuple[str, bool], list[bool]] = {}
+
+    def allowed(self, text: str, made: int) -> list[bool]:
+        """Allowed vocab positions after `text` (decoded so far, `made` tokens)."""
+        last = made >= self.max_new_tokens - 1  # one token left: it must close the action
+        key = (text, last)
+        if key not in self._cache:
+            ok = []
+            for s, end in zip(self.strings, self.end_ok):
+                st = action_prefix_state(text + s)
+                ok.append(st == "done" if last else (st is not None and (st != "done" or end)))
+            if not any(ok):  # cannot happen for a valid prefix; never mask everything
+                ok = [True] * len(ok)
+            if len(self._cache) > 50_000:
+                self._cache.clear()
+            self._cache[key] = ok
+        return self._cache[key]
+
+    def mask(self, text: str, made: int, device=None):
+        import torch
+
+        return torch.tensor(self.allowed(text, made), dtype=torch.bool, device=device)
+
+
 # -- policy (model card section 4) --------------------------------------------------------
 
 USER_TEXT = "current game screen"
@@ -222,6 +305,7 @@ class GameScalingPolicy:
         self.prefill = PREFILL_REASONING if reasoning else PREFILL_DIRECT
         self.temperature = temperature
         self.logit_post = None  # callable(logits) -> logits before sampling, e.g. output energy
+        self.grammar = None  # ActionGrammar: sample only completions that parse
         self.max_new_tokens = max_new_tokens or (2048 if reasoning else 64)
         self.session_turns = session_turns
         self.generator = generator
@@ -318,13 +402,17 @@ class GameScalingPolicy:
         self.last_prompt_tokens = len(self.cache_ids)
         return out.logits[:, -1]
 
-    def _sample(self, logits) -> int:
+    def _sample(self, logits, gtext: str = "", made: int = 0) -> int:
         """Sample an index into logits; records its log-probability (at the
-        sampling temperature) in self.sampled_logp for PPO's ratio."""
+        sampling temperature) in self.sampled_logp for PPO's ratio. With a
+        grammar, logits outside the action format are masked first (gtext:
+        the vocab strings sampled so far, made: how many)."""
         import torch
 
         if self.logit_post is not None:
             logits = self.logit_post(logits)
+        if self.grammar is not None:
+            logits = logits.masked_fill(~self.grammar.mask(gtext, made, logits.device), float("-inf"))
         if self.temperature > 0:
             logp = (logits.float() / self.temperature).log_softmax(-1)
             idx = int(torch.multinomial(logp.exp(), 1, generator=self.generator))
@@ -345,12 +433,17 @@ class GameScalingPolicy:
         made: list[int] = []
         self.sampled_logp, self.sampled_tokens = [], made
         text = ""
+        gtext = ""
         for _ in range(self.max_new_tokens):
-            token = vocab[self._sample(logits)]
+            i = self._sample(logits, gtext, len(made))
+            token = vocab[i]
             made.append(token)
             text = self.tok.decode(made, skip_special_tokens=False)
+            if self.grammar is not None:
+                gtext += self.grammar.strings[i]
             if token == self.tok.eos_token_id or ACTION_END in text or (
-                    text.count(";") >= STEPS and "<" in text.rsplit(";", 1)[-1]):
+                    text.count(";") >= STEPS and "<" in text.rsplit(";", 1)[-1]) or (
+                    self.grammar is not None and action_prefix_state(gtext) == "done"):
                 break
             self.cache_ids.append(token)
             self.mm_types.append(0)
@@ -530,12 +623,17 @@ class StreamingPolicy(GameScalingPolicy):
         made: list[int] = []
         self.sampled_logp, self.sampled_tokens = [], made
         text = ""
+        gtext = ""
         for _ in range(self.max_new_tokens):
-            token = self.vocab[self._sample(logits)]
+            i = self._sample(logits, gtext, len(made))
+            token = self.vocab[i]
             made.append(token)
             text = self.tok.decode(made, skip_special_tokens=False)
+            if self.grammar is not None:
+                gtext += self.grammar.strings[i]
             if token == self.tok.eos_token_id or ACTION_END in text or (
-                    text.count(";") >= STEPS and "<" in text.rsplit(";", 1)[-1]):
+                    text.count(";") >= STEPS and "<" in text.rsplit(";", 1)[-1]) or (
+                    self.grammar is not None and action_prefix_state(gtext) == "done"):
                 break
             logits = dec.step(token)[0]
         fed = len(made) - 1

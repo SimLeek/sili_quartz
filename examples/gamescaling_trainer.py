@@ -51,8 +51,8 @@ from sili_quartz.continual import (
     ContinualLoRA, WeightSync, direct_params, reset_adam_state, sync_tensors, target_linears,
 )
 from sili_quartz.gamescaling import (
-    ACTION_END, MINECRAFT_KEYS, MINECRAFT_RULES, NOOP_TEXT, USER_TEXT, action_vocab, build_system_prompt,
-    reasoning_probe,
+    ACTION_END, MINECRAFT_KEYS, MINECRAFT_RULES, NOOP_TEXT, USER_TEXT, ActionGrammar, action_prefix_state,
+    action_vocab, build_system_prompt, reasoning_probe,
 )
 
 CENTRE, REGION_A, REGION_B = 13, 7, 19  # hidden_states index = layer index + 1
@@ -69,6 +69,22 @@ def assistant_content(row: dict) -> str:
     if row.get("parsed") and raw.rstrip().endswith(ACTION_END):
         return "<|action_start|" + raw
     return NOOP_TEXT
+
+
+def turn_mask(grammar, tgt: list[int]):
+    """The grammar mask at each position of one turn's action tokens (tgt:
+    their action-vocab indices, -1 outside it), as the actor applied it;
+    positions after the action closed (the filled-in end tag) are unmasked."""
+    import torch
+
+    rows, gtext = [], ""
+    for j, i in enumerate(tgt):
+        if action_prefix_state(gtext) == "done":
+            rows.append([True] * len(grammar.strings))
+        else:
+            rows.append(grammar.allowed(gtext, j))
+        gtext += grammar.strings[i] if i >= 0 else ""
+    return torch.tensor(rows, dtype=torch.bool)
 
 
 def read_rows(log: Path, replay: Path) -> list[dict]:
@@ -109,6 +125,9 @@ def main() -> None:
                          "neurons (action-choice probabilities); the actor must run with --energy-io too")
     ap.add_argument("--health", choices=("pr", "pr+act"), default="pr",
                     help="pr+act: also hold the action entropy above 0.8 x its early value (second dual)")
+    ap.add_argument("--grammar", action="store_true",
+                    help="the actor sampled under the action-format mask: apply the same mask to log pi and "
+                         "the entropy")
     ap.add_argument("--merge-every", type=int, default=8)
     ap.add_argument("--seconds", type=float, default=0.0)
     ap.add_argument("--steps", type=int, default=0)
@@ -133,6 +152,7 @@ def main() -> None:
     vocab = torch.tensor(action_vocab(tok), device=a.device)
     vocab_index = torch.full((len(tok),), -1, dtype=torch.long, device=a.device)
     vocab_index[vocab] = torch.arange(len(vocab), device=a.device)
+    grammar = ActionGrammar(tok, vocab.tolist()) if a.grammar else None
     system = build_system_prompt("Minecraft", MINECRAFT_RULES, MINECRAFT_KEYS)
 
     linears = target_linears(model)
@@ -254,10 +274,17 @@ def main() -> None:
             tgt = vocab_index[ids[pos]]
             ok = tgt >= 0
             rows_ = torch.tensor([row_of[int(p) - 1] for p in t["action"]], device=a.device)
-            lp_all = torch.log_softmax(act_logits[rows_], -1)
+            if grammar is not None:
+                allowed = turn_mask(grammar, tgt.tolist()).to(a.device)
+                lp_all = torch.log_softmax(act_logits[rows_].masked_fill(~allowed, float("-inf")), -1)
+                plp = torch.where(allowed, lp_all.exp() * lp_all, torch.zeros_like(lp_all))
+                lp_all = lp_all.clamp(min=-30.0)  # a target outside the mask (never sampled so) stays finite
+            else:
+                lp_all = torch.log_softmax(act_logits[rows_], -1)
+                plp = lp_all.exp() * lp_all
             lp_tok = torch.where(ok, lp_all.gather(1, tgt.clamp(min=0)[:, None])[:, 0], torch.zeros_like(tgt, dtype=torch.float))
             lps.append(lp_tok[ok].mean())
-            ents.append(-(lp_all.exp() * lp_all).sum(-1)[ok].mean())
+            ents.append(-plp.sum(-1)[ok].mean())
             tok_lp.append(lp_tok)
         lps = torch.stack(lps)
         reward = res["reward"]

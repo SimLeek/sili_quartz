@@ -139,6 +139,9 @@ def main():
     ap.add_argument("--energy-io", action="store_true",
                     help="with --energy: also the input neurons (token embeddings, vision merger) and the "
                          "output neurons (action-choice probabilities)")
+    ap.add_argument("--grammar", action="store_true",
+                    help="mask sampling to the action format, so every decision parses (the trainer must "
+                         "run with --grammar too)")
     a = ap.parse_args()
 
     if a.random_from:
@@ -146,6 +149,10 @@ def main():
     else:
         policy = load_policy(a.model, a.device, getattr(torch, a.dtype), a.history, a.temperature,
                              fast=not a.slow, session_turns=0 if a.slow else 30)
+    if a.grammar and not a.random_from:
+        from sili_quartz.gamescaling import ActionGrammar
+
+        policy.grammar = ActionGrammar(policy.tok, policy.vocab, policy.max_new_tokens)
     client = make_client()
     if not client.connect(timeout_s=30):
         raise SystemExit("robonet bridge not reachable")

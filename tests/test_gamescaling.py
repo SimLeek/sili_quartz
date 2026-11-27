@@ -144,3 +144,79 @@ def test_action_vocab_covers_every_token_of_valid_actions():
                  "1000 -1000 5 ; W A S D ; Space Ctrl ; ; ; ; nine<|action_end|>",
                  "0 0 0 ;  ;  ;  ;  ;  ; <|action_end|>"):
         assert set(tok.encode(text, add_special_tokens=False)) <= vocab, text
+
+
+def test_action_prefix_state_accepts_valid_actions_and_rejects_the_logged_breakages():
+    from sili_quartz.gamescaling import action_prefix_state
+
+    for done in (">0 2 0 ;  ;  ;  ;  ;  ; <", ">-37 -3 0 ; LB S ; LB ; LB ; LB ; LB ; LB<",
+                 ">1 16 0 ; W<", ">0 0 0 ; ; ; ; ; ; <|action_end|>"):
+        assert action_prefix_state(done) == "done", done
+        assert parse_action("<|action_start|" + done.split("<")[0] + "<|action_end|>").parsed, done
+        for i in range(1, len(done)):
+            assert action_prefix_state(done[:i]) is not None, done[:i]
+    for bad in (">-1000 -1000 184 161", ">64; XMB", ">0 0 0 0 0 0 ; Alt", ">100;EJN7JW",
+                "><", ">0<", ">1 0;   ; LB", ">0 0 0 ; ; ; ; ; ; ;", ">0 0 0 ; A B C D E",
+                ">0 0 0 ; Lb<", ">0 0 0 ;     ", ">0 0 0 ; <|im_end|>", ">-.", ">.", ">8 - ", ">1. "):
+        assert action_prefix_state(bad) is None, bad
+
+
+class _CharTok:
+    """Tokenizer stand-in: one token per string in a fixed list."""
+
+    def __init__(self, strings):
+        self.strings = strings
+
+    def decode(self, ids, skip_special_tokens=False):
+        return "".join(self.strings[i] for i in ids)
+
+
+def test_grammar_sampling_always_parses_within_the_token_budget():
+    import random
+
+    from sili_quartz.gamescaling import ActionGrammar, action_prefix_state
+
+    strings = [">", ">-", "0", "1", "16", "-", " ", "  ", " ;", ";", " ; ", "LB", "W", "A", "S", "Space",
+               "X", "MB", "Lb", " <", "<", "<|action_end|>", "<|im_end|>", "1000", ".", "9"]
+    g = ActionGrammar(_CharTok(strings), list(range(len(strings))), max_new_tokens=64)
+    rng = random.Random(0)
+    for _ in range(300):
+        text, made = "", 0
+        while action_prefix_state(text) != "done":
+            ok = [i for i, a in enumerate(g.allowed(text, made)) if a]
+            text += strings[rng.choice(ok)]
+            made += 1
+            assert made <= 64
+        body = text[: text.index("<")]
+        assert parse_action("<|action_start|" + body + "<|action_end|>").parsed, text
+
+
+def test_grammar_masks_the_real_action_vocab_and_keeps_the_noop_reachable():
+    if not (MODEL_DIR / "tokenizer.json").exists():
+        pytest.skip(f"no tokenizer at {MODEL_DIR}")
+    import random
+
+    from transformers import AutoTokenizer
+
+    from sili_quartz.gamescaling import ActionGrammar, action_prefix_state, action_vocab
+
+    tok = AutoTokenizer.from_pretrained(MODEL_DIR)
+    vocab = action_vocab(tok)
+    g = ActionGrammar(tok, vocab)
+    rng = random.Random(1)
+    for _ in range(200):
+        text, made = "", 0
+        while action_prefix_state(text) != "done":
+            ok = [i for i, a in enumerate(g.allowed(text, made)) if a]
+            text += g.strings[rng.choice(ok)]
+            made += 1
+            assert made <= 64, text
+        assert parse_action("<|action_start|" + text[: text.index("<")] + "<|action_end|>").parsed, text
+    # the untouched policy's commonest action, token by token, is never masked
+    ids = tok.encode(">0 0 0 ;  ;  ;  ;  ;  ; <|action_end|>", add_special_tokens=False)
+    text = ""
+    for j, t in enumerate(ids):
+        if action_prefix_state(text) == "done":
+            break
+        assert g.allowed(text, j)[vocab.index(t)], (text, tok.decode([t]))
+        text += g.strings[vocab.index(t)]
