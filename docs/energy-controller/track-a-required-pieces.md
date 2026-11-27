@@ -179,6 +179,20 @@ tree and the pieces here are updated from them.
     These trends are read against the untouched runs' own trends; even Root_g
     mines less in its second half (the trees near spawn are used up first).
   - health is a constraint, not the goal.
+  - **The dark-room signal** (user): a policy should not choose the pause menu
+    and stay there.
+    - **Pauses per hour:** from the game log's "Saving and pausing game"
+      lines. Earlier sessions logged 66–247 pauses each.
+    - **Esc resumes:** when the screen stays frozen for 3 minutes on a pause,
+      the watcher presses Esc once and counts it, so returning to the pause
+      menu shows as a rising count.
+    - **Ended by hang:** a frozen screen that is not a pause is a hang; the
+      watcher kills the game and ends the run (it stops the actor), recorded
+      as the run's ending reason.
+    - Before this change a parked pause was treated as a hang and the game was
+      killed and relaunched mid-run: Tin3_et_curio lost about 5–8 minutes at
+      22:29–22:37 UTC (the first relaunch timed out after 240 s) while the
+      actor kept acting on the desktop.
 - **Noise floor:**
   - three untouched runs (Root_g, Root_g2, Root_g3) give the run-to-run spread
     of every play metric;
