@@ -167,6 +167,38 @@ tree and the pieces here are updated from them.
   the base range.
 - **Otherwise:** the trait goes to keep off (with where) or rejected.
 
+### How a result counts (user, 2026-11-27)
+
+- **Better, beyond "not broken":**
+  - capability in the game: per hour of play, blocks mined, items picked up,
+    distance, deaths; plus distinct block types, crafting, and tutorial
+    progress;
+  - **learning within the run:** the last third of the windows against the
+    first third, and the second half's game rates against the first half's.
+    The first minutes are the base model, so each run is its own control.
+    These trends are read against the untouched runs' own trends; even Root_g
+    mines less in its second half (the trees near spawn are used up first).
+  - health is a constraint, not the goal.
+- **Noise floor:**
+  - three untouched runs (Root_g, Root_g2, Root_g3) give the run-to-run spread
+    of every play metric;
+  - three sampling seeds of the repertoire probe on fixed weights give the
+    probe's own sd.
+  - A difference inside the floor is not evidence: if the winner's lead over
+    the runner-up is inside it (coherence lead under 2× the probe sd, or
+    deviation inside the untouched spread), both are rerun with a second
+    training seed and the averages decide.
+- **Method or setting?**
+  - Is the drive's signal alive (reward variance non-zero and moving with
+    events)?
+  - Did the policy respond (log-probs shift, PPO turns matched)?
+  - Is the result robust to its knob? The winner is swept at learning rate
+    and dose ¼×, 1×, 4× and reported by its **worst case**.
+  - A dead signal is a bug or a setting. A live signal with worse behaviour
+    is the objective.
+
+Scripts: `tools/lineage/` (copies of the sandbox orchestration).
+
 ### Next traits, by outcome
 
 - **If Tin3_et_curio advances**, its children each try one of:
