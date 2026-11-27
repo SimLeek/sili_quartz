@@ -96,11 +96,24 @@ no-op desktop entry (`~/.local/share/applications/noop-url.desktop`,
 `Exec=/bin/true`; `xdg-mime` and `gio` both resolve to it; the game's
 environment sets no desktop or `BROWSER` variable, so `xdg-open` uses it).
 A backstop loop (`~/runs/browser_guard.sh`) kills any Firefox process and
-logs it to `~/runs/browser_guard.log`. Undo: delete the desktop entry and
-the two lines in `~/.config/mimeapps.list`, and kill the loop.
+logs it to `~/runs/browser_guard.log`.
+
+Both are now behind one switch, `~/runs/sandbox_mode.sh session|desktop|status`.
+`session` turns them on; every training session calls it at start.
+`desktop` turns them off and also stops what sessions leave running between
+runs: the game watcher (relaunches the game, closes browsers and file
+managers, keeps re-focusing the game), robonet's brain and endpoint, and the
+game. It refuses while a session's actor is alive unless given `--force`. A
+waiter (`~/runs/queue_end_desktop.sh`) runs `desktop` once the arms queue
+prints QUEUE_DONE.
 
 ## Not measured yet
 
 - Why the decision interval doubled to about 0.76 s in the unparsed phase.
 - Whether the trainer's reward treats unparsed decisions differently from
   parsed no-key ones.
+- Thought–action agreement. Only the action tokens are trained, so fluent
+  thoughts show the shared weights are not broken in general. They do not
+  show that the trained behaviour is healthy. A score of whether the action
+  does what the thought says (keys and clicks named in the thought against
+  the action that follows) would measure the split directly.
