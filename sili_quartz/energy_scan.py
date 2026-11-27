@@ -101,6 +101,7 @@ class ScanSite:
     mean: float  # mean |h / scale| on ordinary input
     scale: float = 1.0
     cost: float = 0.03
+    flat_tokens: bool = False  # the module outputs (tokens, n), e.g. the vision merger
 
 
 class ScanEnergy:
@@ -186,7 +187,11 @@ class ScanEnergy:
         def hook(_module, _args, output):
             if not self.enabled:
                 return None
-            out = self.apply(i, output[0] if isinstance(output, tuple) else output)
+            h = output[0] if isinstance(output, tuple) else output
+            if self.sites[i].flat_tokens and h.dim() == 2:
+                out = self.apply(i, h[None])[0]
+            else:
+                out = self.apply(i, h)
             return (out, *output[1:]) if isinstance(output, tuple) else out
 
         return hook

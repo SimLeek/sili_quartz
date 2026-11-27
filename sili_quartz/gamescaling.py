@@ -221,6 +221,7 @@ class GameScalingPolicy:
         self.turns: list = []  # (frame, assistant content) for the current session
         self.prefill = PREFILL_REASONING if reasoning else PREFILL_DIRECT
         self.temperature = temperature
+        self.logit_post = None  # callable(logits) -> logits before sampling, e.g. output energy
         self.max_new_tokens = max_new_tokens or (2048 if reasoning else 64)
         self.session_turns = session_turns
         self.generator = generator
@@ -322,6 +323,8 @@ class GameScalingPolicy:
         sampling temperature) in self.sampled_logp for PPO's ratio."""
         import torch
 
+        if self.logit_post is not None:
+            logits = self.logit_post(logits)
         if self.temperature > 0:
             logp = (logits.float() / self.temperature).log_softmax(-1)
             idx = int(torch.multinomial(logp.exp(), 1, generator=self.generator))

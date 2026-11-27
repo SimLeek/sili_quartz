@@ -94,3 +94,53 @@ def test_turn_positions_on_rendered_conversation():
     for t, act in zip(turns, acts):
         assert tok.decode([ids[t["state"]]]) == "<|im_end|>"
         assert ("<|action_start|" + tok.decode([ids[i] for i in t["action"]])) == act
+
+
+def _out_energy(n_choice: int):
+    from sili_quartz.energy_scan import ScanEnergy, ScanSite
+
+    energy = ScanEnergy([ScanSite(torch.nn.Identity(), 1.0, 1.0 / n_choice, 0.0009)])
+    energy.out_index = 0
+    return energy
+
+
+def test_output_energy_passes_at_dose_zero_and_keeps_gradient():
+    from sili_quartz.actor_objective import output_energy
+
+    energy = _out_energy(4)
+    energy.set_dose(cost_scale=0.0, noise_scale=0.0)
+    logits = torch.randn(5, 6, requires_grad=True)
+    cols = torch.tensor([1, 2, 3, 4])
+    out = output_energy(energy, logits, cols)
+    assert torch.allclose(out.log_softmax(-1), logits.log_softmax(-1), atol=1e-5)
+    out.log_softmax(-1)[:, 2].sum().backward()
+    assert logits.grad is not None and logits.grad.abs().sum() > 0
+
+
+def test_output_energy_shuts_off_an_always_chosen_token():
+    """A collapsed policy (one choice token at p ~ 1 every step) loses that token
+    once its energy is drained; format columns outside `cols` are untouched."""
+    from sili_quartz.actor_objective import output_energy
+
+    energy = _out_energy(4)
+    energy.set_dose(cost_scale=50.0, noise_scale=0.0)
+    logits = torch.full((1, 6), -10.0)
+    logits[0, 1] = 10.0  # the collapsed choice
+    logits[0, 0] = 0.0  # a format token, not in cols
+    cols = torch.tensor([1, 2, 3, 4])
+    probs = [output_energy(energy, logits, cols).softmax(-1)[0] for _ in range(60)]
+    assert probs[0][1] > 0.99
+    assert probs[-1][1] < 0.01  # shut off
+    assert probs[-1][0] > 0.9  # the mass goes to what is left; format token logit unchanged
+    assert torch.isclose(output_energy(energy, logits, cols)[0, 0], logits[0, 0])
+
+
+def test_flat_token_site_steps_over_tokens_not_rows():
+    from sili_quartz.energy_scan import ScanEnergy, ScanSite
+
+    mod = torch.nn.Identity()
+    energy = ScanEnergy([ScanSite(mod, 1.0, 1.0, 0.03, flat_tokens=True)])
+    energy.set_dose(cost_scale=1.0, noise_scale=0.0)
+    out = mod(torch.ones(7, 3))  # (tokens, n), e.g. the vision merger
+    assert out.shape == (7, 3)
+    assert energy.states[0].numel() == 3  # one state per neuron, not per (token, neuron)

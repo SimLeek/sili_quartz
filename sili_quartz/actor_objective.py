@@ -62,12 +62,68 @@ def measure_site_means(model, run) -> tuple[list[float], list[float]]:
     return means[: len(mlp)], means[len(mlp):]
 
 
-def make_energy(model, mlp_means, attn_means, costs=TRACK_A_COSTS, decay_div=DECAY_DIV) -> ScanEnergy:
-    """Every site is scaled to its layer's MLP activations, so a cost is the same dose everywhere."""
+def io_modules(model) -> list[nn.Module]:
+    """Input neurons: the token embeddings and the vision merger's output (image tokens)."""
+    return [model.model.language_model.embed_tokens, model.model.visual.merger]
+
+
+@torch.no_grad()
+def measure_io_means(model, run) -> list[float]:
+    return mean_abs_outputs(io_modules(model), run)
+
+
+def choice_columns(tok, vocab: list[int]) -> list[int]:
+    """Columns of the action vocabulary that choose something (digits, '-', key
+    names), not format: separators, spaces, the end tag and end of turn. Energy
+    drains always-on neurons, so format tokens would be shut off and actions
+    would stop parsing."""
+    cols = []
+    for j, t in enumerate(vocab):
+        text = tok.decode([t], skip_special_tokens=False)
+        core = text.strip()
+        if not core or core == ";" or "<" in text or ">" in text or t == tok.eos_token_id:
+            continue
+        cols.append(j)
+    return cols
+
+
+def make_energy(model, mlp_means, attn_means, costs=TRACK_A_COSTS, decay_div=DECAY_DIV,
+                io_means=None, n_choice: int = 0) -> ScanEnergy:
+    """Every site is scaled to its layer's MLP activations, so a cost is the same dose everywhere.
+    io_means: also the input neurons (io_modules). n_choice > 0: also an output site over
+    the action-choice probabilities (`output_energy`), scaled so a uniform spread is 1."""
     mlp, attn = site_modules(model)
     sites = [ScanSite(m, ref, 1.0, costs[0]) for m, ref in zip(mlp, mlp_means)]
     sites += [ScanSite(m, ref, mean / ref, costs[1]) for m, mean, ref in zip(attn, attn_means, mlp_means)]
-    return ScanEnergy(sites, decay_div=decay_div)
+    ref = sum(mlp_means) / len(mlp_means)
+    if io_means is not None:
+        emb, merger = io_modules(model)
+        sites += [ScanSite(emb, ref, io_means[0] / ref, costs[1]),
+                  ScanSite(merger, ref, io_means[1] / ref, costs[1], flat_tokens=True)]
+    out_index = None
+    if n_choice:
+        out_index = len(sites)
+        sites.append(ScanSite(nn.Identity(), 1.0, 1.0 / n_choice, costs[0]))
+    energy = ScanEnergy(sites, decay_div=decay_div)
+    energy.out_index = out_index
+    return energy
+
+
+def output_energy(energy: ScanEnergy, logits: Tensor, cols: Tensor) -> Tensor:
+    """Energy on the output neurons: the probabilities of the action-choice columns
+    `cols` of `logits` (..., V) over the action vocabulary, as one sequence over the
+    leading dims. Kept probabilities pass (with gradient), fired ones are set to
+    2 / n_choice, shut-off ones to near 0; returns logits on the same normalizer."""
+    if getattr(energy, "out_index", None) is None or not energy.enabled:
+        return logits
+    shape = logits.shape
+    flat = logits.reshape(-1, shape[-1]).float()
+    lse = flat.logsumexp(-1, keepdim=True)
+    p = (flat - lse).exp()[:, cols]
+    p2 = energy.apply(energy.out_index, p[None])[0]
+    out = flat.clone()
+    out[:, cols] = p2.clamp_min(1e-12).log() + lse
+    return out.reshape(shape).to(logits.dtype)
 
 
 def decoder_attn_post(energy: ScanEnergy, n_layers: int):

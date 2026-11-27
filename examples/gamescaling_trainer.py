@@ -44,7 +44,8 @@ import torch
 from PIL import Image
 
 from sili_quartz.actor_objective import (
-    Boredom, Dual, PredictiveInfo, make_energy, measure_site_means, participation_ratio, turn_positions,
+    Boredom, Dual, PredictiveInfo, choice_columns, make_energy, measure_io_means, measure_site_means,
+    output_energy, participation_ratio, turn_positions,
 )
 from sili_quartz.continual import (
     ContinualLoRA, WeightSync, direct_params, reset_adam_state, sync_tensors, target_linears,
@@ -103,6 +104,9 @@ def main() -> None:
     ap.add_argument("--w-rep", type=float, default=1.0)
     ap.add_argument("--w-pg", type=float, default=1.0)
     ap.add_argument("--w-health", type=float, default=1.0)
+    ap.add_argument("--energy-io", action="store_true",
+                    help="energy also on the input neurons (token embeddings, vision merger) and the output "
+                         "neurons (action-choice probabilities); the actor must run with --energy-io too")
     ap.add_argument("--health", choices=("pr", "pr+act"), default="pr",
                     help="pr+act: also hold the action entropy above 0.8 x its early value (second dual)")
     ap.add_argument("--merge-every", type=int, default=8)
@@ -173,13 +177,17 @@ def main() -> None:
         time.sleep(2)
     if means_path.exists():
         m = json.loads(means_path.read_text())
-        mlp_means, attn_means = m["mlp"], m["attn"]
+        mlp_means, attn_means, io_means = m["mlp"], m["attn"], m.get("io")
     else:
         rows = read_rows(run / "actor.jsonl", replay)
         first = window_inputs(rows[-a.window:])
         with torch.no_grad():
-            mlp_means, attn_means = measure_site_means(model, lambda: model(**first))
-    energy = make_energy(model, mlp_means, attn_means)
+            mlp_means, attn_means = measure_site_means(model, lambda: model(**first, logits_to_keep=1))
+            io_means = measure_io_means(model, lambda: model(**first, logits_to_keep=1)) if a.energy_io else None
+    cols = choice_columns(tok, vocab.tolist()) if a.energy_io else []
+    cols_t = torch.tensor(cols, device=a.device)
+    energy = make_energy(model, mlp_means, attn_means, io_means=io_means if a.energy_io else None,
+                         n_choice=len(cols))
     adv_mean, adv_var, step, t_start = 0.0, 1.0, 0, time.time()
     last_ckpt = t_start
     last_probe = 0.0
@@ -239,12 +247,14 @@ def main() -> None:
         logits = out.logits[0]
         del out
         lps, tok_lp, ents = [], [], []
+        # one sequence over all action positions, so the output energy steps through them in order
+        act_logits = output_energy(energy, logits[:, vocab].float(), cols_t) if cols else logits[:, vocab].float()
         for t in turns:
             pos = torch.tensor(t["action"], device=a.device)
             tgt = vocab_index[ids[pos]]
             ok = tgt >= 0
             rows_ = torch.tensor([row_of[int(p) - 1] for p in t["action"]], device=a.device)
-            lp_all = torch.log_softmax(logits[rows_][:, vocab].float(), -1)
+            lp_all = torch.log_softmax(act_logits[rows_], -1)
             lp_tok = torch.where(ok, lp_all.gather(1, tgt.clamp(min=0)[:, None])[:, 0], torch.zeros_like(tgt, dtype=torch.float))
             lps.append(lp_tok[ok].mean())
             ents.append(-(lp_all.exp() * lp_all).sum(-1)[ok].mean())

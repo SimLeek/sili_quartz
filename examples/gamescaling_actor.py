@@ -136,6 +136,9 @@ def main():
     ap.add_argument("--sync-dir", type=Path, default=None, help="apply the trainer's weight updates from here")
     ap.add_argument("--energy", action="store_true", help="energy on the model, dose from --dose-file")
     ap.add_argument("--dose-file", type=Path, default=None)
+    ap.add_argument("--energy-io", action="store_true",
+                    help="with --energy: also the input neurons (token embeddings, vision merger) and the "
+                         "output neurons (action-choice probabilities)")
     a = ap.parse_args()
 
     if a.random_from:
@@ -151,18 +154,26 @@ def main():
         time.sleep(0.05)
     energy = applier = saver = None
     if a.energy:
-        from sili_quartz.actor_objective import decoder_attn_post, make_energy, measure_site_means
+        from sili_quartz.actor_objective import (choice_columns, decoder_attn_post, make_energy,
+                                                 measure_io_means, measure_site_means, output_energy)
 
         frame0 = Image.fromarray(client.frame)
         text = policy._render(policy.messages(frame0, turns=[]))
         inputs = policy.processor(text=[text], images=[frame0], return_tensors="pt").to(policy.model.device)
         mlp_means, attn_means = measure_site_means(policy.model, lambda: policy.model(**inputs))
-        energy = make_energy(policy.model, mlp_means, attn_means)
+        io_means, cols = None, []
+        if a.energy_io:
+            io_means = measure_io_means(policy.model, lambda: policy.model(**inputs))
+            cols = choice_columns(policy.tok, policy.vocab)
+        energy = make_energy(policy.model, mlp_means, attn_means, io_means=io_means, n_choice=len(cols))
         energy.set_dose(cost_scale=0.0, noise_scale=0.0)
         policy.decoder.attn_post = decoder_attn_post(energy, len(mlp_means))
+        if cols:
+            cols_t = torch.tensor(cols, device=policy.model.device)
+            policy.logit_post = lambda lg: output_energy(energy, lg, cols_t)
         if a.dose_file:
             means_path = a.dose_file.parent / "energy_means.json"
-            means_path.write_text(json.dumps({"mlp": mlp_means, "attn": attn_means}))
+            means_path.write_text(json.dumps({"mlp": mlp_means, "attn": attn_means, "io": io_means}))
     if a.sync_dir:
         from sili_quartz.continual import SyncApplier
 
