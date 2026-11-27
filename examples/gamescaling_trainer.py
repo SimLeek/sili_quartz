@@ -64,7 +64,7 @@ from sili_quartz.actor_objective import (
     output_energy, participation_ratio, turn_positions,
 )
 from sili_quartz.continual import (
-    ContinualLoRA, RowNormBand, WeightSync, direct_params, reset_adam_state, sync_tensors, target_linears,
+    ContinualLoRA, RowNormBand, WeightSync, direct_params, load_checkpoint, reset_adam_state, sync_tensors, target_linears,
 )
 from sili_quartz.gamescaling import (
     ACTION_END, MINECRAFT_KEYS, MINECRAFT_RULES, NOOP_TEXT, USER_TEXT, ActionGrammar, action_prefix_state,
@@ -158,6 +158,9 @@ def main() -> None:
     ap.add_argument("--renorm", action="store_true",
                     help="amortized magnitude health: after each merge, rescale rows of 1/8 of the Linears "
                          "back into [0.8, 1.25] x their starting norms")
+    ap.add_argument("--init", type=Path, default=None,
+                    help="start from a trainer checkpoint, e.g. a previous run's last; the actor needs the same "
+                         "--init. The health anchors (row-norm band, floors) are measured from these weights")
     ap.add_argument("--merge-every", type=int, default=8)
     ap.add_argument("--seconds", type=float, default=0.0)
     ap.add_argument("--steps", type=int, default=0)
@@ -176,6 +179,8 @@ def main() -> None:
     proc = AutoProcessor.from_pretrained(a.model)
     tok = proc.tokenizer
     model = Qwen3_5ForConditionalGeneration.from_pretrained(a.model, dtype=torch.float32).to(a.device)
+    if a.init is not None:
+        print(json.dumps({"init": str(a.init), "tensors": load_checkpoint(model, a.init)}), flush=True)
     model.requires_grad_(False)
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model.train()

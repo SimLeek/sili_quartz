@@ -162,6 +162,21 @@ class RowNormBand:
         return changed, rows
 
 
+@torch.no_grad()
+def load_checkpoint(model: nn.Module, path) -> int:
+    """Load a trainer checkpoint (parameter name -> tensor, as the trainer saves
+    every --checkpoint-every seconds) into `model` in place, in its own dtypes.
+    Returns the number of tensors loaded; raises on a name the model lacks."""
+    sd = torch.load(path, map_location="cpu", weights_only=True)
+    params = dict(model.named_parameters(remove_duplicate=False))
+    missing = [n for n in sd if n not in params]
+    if missing:
+        raise KeyError(f"{len(missing)} checkpoint tensors not in the model, e.g. {missing[:3]}")
+    for n, t in sd.items():
+        params[n].copy_(t.to(params[n].device, params[n].dtype))
+    return len(sd)
+
+
 class WeightSync:
     """Trainer side: per merge, a packet of the fp16 entries that changed."""
 

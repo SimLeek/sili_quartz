@@ -104,3 +104,22 @@ def test_direct_params_cover_everything_but_adapted_weights():
     direct = direct_params(m, lin)
     assert sorted(direct) == ["0.bias", "2.bias"]
     assert len(sync_tensors(lin, direct)) == len(list(m.parameters()))
+
+
+def test_load_checkpoint_round_trips_the_trainers_saved_tensors(tmp_path):
+    import torch
+    from torch import nn
+
+    from sili_quartz.continual import load_checkpoint
+
+    src, dst = nn.Sequential(nn.Linear(3, 4), nn.LayerNorm(4)), nn.Sequential(nn.Linear(3, 4), nn.LayerNorm(4))
+    with torch.no_grad():
+        src[1].weight.mul_(3.0)
+    torch.save({n: t.detach().half() for n, t in src.named_parameters()}, tmp_path / "ck.pt")
+    assert load_checkpoint(dst, tmp_path / "ck.pt") == 4
+    for (n, a), (_, b) in zip(src.named_parameters(), dst.named_parameters()):
+        assert torch.allclose(a.half().float(), b), n
+    torch.save({"nope.weight": torch.zeros(1)}, tmp_path / "bad.pt")
+    import pytest
+    with pytest.raises(KeyError):
+        load_checkpoint(dst, tmp_path / "bad.pt")

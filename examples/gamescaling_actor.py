@@ -67,11 +67,15 @@ class ReplayRandomPolicy:
 
 
 def load_policy(model_dir: str, device: str, dtype: torch.dtype, history: int, temperature: float,
-                fast: bool = True, session_turns: int = 30):
+                fast: bool = True, session_turns: int = 30, init: Path | None = None):
     from transformers import AutoProcessor, Qwen3_5ForConditionalGeneration
 
     processor = AutoProcessor.from_pretrained(model_dir)
     model = Qwen3_5ForConditionalGeneration.from_pretrained(model_dir, dtype=dtype).to(device).eval()
+    if init is not None:
+        from sili_quartz.continual import load_checkpoint
+
+        print(f"init: {load_checkpoint(model, init)} tensors from {init}", flush=True)
     system = build_system_prompt("Minecraft", MINECRAFT_RULES, MINECRAFT_KEYS)
     if fast:
         return StreamingPolicy(model, processor, system, history_len=history, temperature=temperature)
@@ -134,6 +138,8 @@ def main():
     ap.add_argument("--seed", type=int, default=0, help="seed for --random-from")
     ap.add_argument("--replay-dir", type=Path, default=None, help="save each decision's frame here (JPEG)")
     ap.add_argument("--sync-dir", type=Path, default=None, help="apply the trainer's weight updates from here")
+    ap.add_argument("--init", type=Path, default=None,
+                    help="start from a trainer checkpoint (the trainer must get the same --init)")
     ap.add_argument("--energy", action="store_true", help="energy on the model, dose from --dose-file")
     ap.add_argument("--dose-file", type=Path, default=None)
     ap.add_argument("--energy-io", action="store_true",
@@ -148,7 +154,7 @@ def main():
         policy = ReplayRandomPolicy(a.random_from, a.seed)
     else:
         policy = load_policy(a.model, a.device, getattr(torch, a.dtype), a.history, a.temperature,
-                             fast=not a.slow, session_turns=0 if a.slow else 30)
+                             fast=not a.slow, session_turns=0 if a.slow else 30, init=a.init)
     if a.grammar and not a.random_from:
         from sili_quartz.gamescaling import ActionGrammar
 
