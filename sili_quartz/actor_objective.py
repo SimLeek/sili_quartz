@@ -432,6 +432,48 @@ def energy_drive(trace: dict, runs: list[tuple[int, int]]) -> list[float]:
     return [float(sum(t[a:b].mean() for t in sites) / len(sites)) for a, b in runs]
 
 
+class CovControl:
+    """Clip-Cov and KL-Cov (Cui et al. 2025, "The Entropy Mechanism of RL for
+    Reasoning LMs"): policy entropy falls with the covariance between a token's
+    log-prob and its advantage, so act only on the tokens that drive it.
+
+    Per token: cov = (log pi - mean) * (A - mean), means over the step's tokens,
+    current log-probs (detached). The paper selects a fraction of a batch of
+    millions of tokens; with ~10^2 tokens per step that is 0, so the same
+    fraction k is held over a rolling window of recent covariances instead:
+    tokens above the window's (1 - k) quantile are selected.
+    - "kl": selected tokens get + kl_coef * |log pi - log pi_old| on their PPO loss
+      (the paper's code; Eq. 14 writes KL(old || new)). Paper: k = 2e-3, coef 1.
+    - "clip": selected tokens lose their PPO gradient with probability clip_prob
+      (paper: 2e-4 of all tokens, i.e. a tenth of a top-2e-3 band)."""
+
+    def __init__(self, mode: str, k: float = 2e-3, kl_coef: float = 1.0, clip_prob: float = 0.1,
+                 window: int = 32768, seed: int = 0):
+        assert mode in ("kl", "clip")
+        self.mode, self.k, self.kl_coef, self.clip_prob, self.window = mode, k, kl_coef, clip_prob, window
+        self.buf = torch.empty(0)
+        self.gen = torch.Generator().manual_seed(seed)
+
+    def select(self, logp: Tensor, adv: Tensor) -> tuple[Tensor, float | None]:
+        """logp, adv: (N,) for the step's tokens. Returns the selection mask and the threshold."""
+        lp = logp.detach().float()
+        cov = (lp - lp.mean()) * (adv.float() - adv.float().mean())
+        self.buf = torch.cat([self.buf, cov.cpu()])[-self.window:]
+        if self.buf.numel() < 1.0 / self.k:  # too few tokens yet for a top-k fraction to mean anything
+            return torch.zeros_like(cov, dtype=torch.bool), None
+        thr = float(torch.quantile(self.buf, 1.0 - self.k))
+        return cov > thr, thr
+
+    def apply(self, pg: Tensor, logp: Tensor, old_logp: Tensor, mask: Tensor) -> Tensor:
+        """pg: (N,) per-token PPO losses; returns them with the control applied."""
+        if not bool(mask.any()):
+            return pg
+        if self.mode == "kl":
+            return pg + self.kl_coef * (logp - old_logp).abs() * mask
+        drop = mask & (torch.rand(mask.shape, generator=self.gen) < self.clip_prob).to(mask.device)
+        return torch.where(drop, pg.detach(), pg)
+
+
 def input_share(hs, chunk: int) -> Tensor:
     """Per chunk: how much of the chunk's output still points along its input,
     cos^2(mean of the chunk's layer outputs, chunk input), averaged over tokens.

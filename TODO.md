@@ -262,6 +262,17 @@ smallest controller that sets the dose, working before 3 and 4.
     worst-case regret across the range rather than one tuned value.
     First: `tools/thought_influence.py` measures whether the
     base model's thoughts change its actions at all.
+  - Keeping the output repertoire under RL (user, 2026-11-27; A2c collapsed to
+    one key): Clip-Cov / KL-Cov built (`--cov`). Next ideas, all knowing the
+    action tokens:
+    - energy on tokens as virtual neurons: each action token has an energy
+      state, with feedback when it is used too much or too little. Needs a
+      per-token set point (the site-mean set point silences above-mean units at
+      equilibrium);
+    - sleep-phase fan-in consolidation: for each output token, trace and
+      strengthen the path that can trigger it back through the network
+      (possibly a computed fan-in), then make it coherent with the rest of the
+      model during sleep, so every token stays reachable.
   - Every arm is scored by `tools/world_model_probe.py`: ridge from the
     trained state to the untouched model's next-frame input on one fixed
     reference replay, against copy and current-frame baselines.

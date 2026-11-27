@@ -67,7 +67,7 @@ import torch
 from PIL import Image
 
 from sili_quartz.actor_objective import (
-    Boredom, ChunkTether, Dual, InputTether, OutputTether, energy_drive, PredictiveInfo, choice_columns, image_means, image_runs, input_share, make_energy, measure_io_means, measure_site_means,
+    Boredom, ChunkTether, CovControl, Dual, InputTether, OutputTether, energy_drive, PredictiveInfo, choice_columns, image_means, image_runs, input_share, make_energy, measure_io_means, measure_site_means,
     output_energy, participation_ratio, turn_positions,
 )
 from sili_quartz.continual import (
@@ -182,6 +182,10 @@ def main() -> None:
     ap.add_argument("--reward-layers", type=int, default=12,
                     help="--reward energy: the first N layers' MLP and attention sites are the input side")
     ap.add_argument("--probes", type=int, default=4, help="probe actions per empowerment estimate")
+    ap.add_argument("--cov", choices=("none", "kl", "clip"), default="none",
+                    help="entropy-collapse control on the PPO term (Cui et al. 2025): KL-Cov or Clip-Cov on the "
+                         "tokens whose log-prob/advantage covariance is in the top --cov-k of a rolling window")
+    ap.add_argument("--cov-k", type=float, default=2e-3)
     ap.add_argument("--init", type=Path, default=None,
                     help="start from a trainer checkpoint, e.g. a previous run's last; the actor needs the same "
                          "--init. The health anchors (row-norm band, floors) are measured from these weights")
@@ -229,6 +233,7 @@ def main() -> None:
         tether = None
     band = RowNormBand(linears) if a.renorm else None
     tether_out = OutputTether(n_layers, chunk=a.tether_chunk) if a.tether_out else None
+    cov_ctl = CovControl(a.cov, k=a.cov_k, seed=a.seed) if a.cov != "none" else None
     image_token = model.config.image_token_id
     opt = torch.optim.AdamW([
         {"params": list(lora.parameters()), "lr": a.lr},
@@ -422,7 +427,7 @@ def main() -> None:
             adv = {k: max(-3.0, min(3.0, (v - adv_mean) / (adv_var ** 0.5 + 1e-6))) for k, v in rewards.items()}
             # PPO: per-token ratio against the log-prob the actor sampled with, on the
             # tokens it actually sampled (the end tag after '<' is filled in, not sampled)
-            terms = []
+            per_turn = []  # (per-token PPO loss, new log-probs, old log-probs, advantage) per matched turn
             for k, t in enumerate(turns[:-1]):
                 if k not in adv:
                     continue
@@ -431,8 +436,19 @@ def main() -> None:
                     continue
                 matched += 1
                 new_lp = tok_lp[k][:len(sampled)]
-                ratio = torch.exp(new_lp - torch.tensor(old, device=a.device))
-                terms.append(-torch.min(ratio * adv[k], ratio.clamp(1 - a.ppo_eps, 1 + a.ppo_eps) * adv[k]).mean())
+                old_lp = torch.tensor(old, device=a.device)
+                ratio = torch.exp(new_lp - old_lp)
+                pg = -torch.min(ratio * adv[k], ratio.clamp(1 - a.ppo_eps, 1 + a.ppo_eps) * adv[k])
+                per_turn.append((pg, new_lp, old_lp, torch.full_like(new_lp, adv[k])))
+            cov_sel = cov_thr = None
+            if cov_ctl is not None and per_turn:
+                lens = [len(x[0]) for x in per_turn]
+                pg_all, lp_all_t, old_all, adv_all = (torch.cat([x[i] for x in per_turn]) for i in range(4))
+                mask, cov_thr = cov_ctl.select(lp_all_t, adv_all)
+                cov_sel = int(mask.sum())
+                pg_all = cov_ctl.apply(pg_all, lp_all_t, old_all, mask)
+                per_turn = [(chunk,) for chunk in pg_all.split(lens)]
+            terms = [x[0].mean() for x in per_turn]
             loss_pg = torch.stack(terms).mean() if terms else torch.zeros((), device=a.device)
         pr = participation_ratio(hs[CENTRE][0])
         lam = dual.lam
@@ -506,6 +522,9 @@ def main() -> None:
             row["tether_out_mse"] = round(ores["tether_out_mse"], 4)
         if drives is not None:
             row["drive"] = [round(x, 4) for x in drives]
+        if cov_ctl is not None:
+            row["cov_selected"] = cov_sel if rewards else None
+            row["cov_threshold"] = None if not rewards or cov_thr is None else round(cov_thr, 5)
         if emp_st is not None:
             row.update({"emp": None if emp is None else round(emp, 4), "emp_ready": emp_st["ready"],
                         "chunk0_mse": round(emp_st["mse"], 4), "chunk0_copy_mse": round(emp_st["copy_mse"], 4)})

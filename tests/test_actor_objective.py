@@ -390,3 +390,35 @@ def test_intervened_counts_held_shut_offs_too():
     tr = en.trace[0]
     first = int((tr > 0).nonzero()[0])
     assert float(tr[first:].min()) == 1.0  # every token after the first shut-off counts
+
+
+def test_cov_control_selects_about_k_of_tokens_over_the_window_and_targets_confident_rewarded_tokens():
+    from sili_quartz.actor_objective import CovControl
+
+    g = torch.Generator().manual_seed(0)
+    ctl = CovControl("kl", k=0.01, window=20000)
+    picked = total = 0
+    for _ in range(200):
+        lp = -torch.rand(100, generator=g) * 3
+        adv = torch.randn(100, generator=g)
+        mask, thr = ctl.select(lp, adv)
+        if thr is not None:
+            picked += int(mask.sum()); total += 100
+            cov = (lp - lp.mean()) * (adv - adv.mean())
+            assert bool((cov[mask] > 0).all())  # confident and rewarded, or unlikely and punished
+    assert 0.005 < picked / total < 0.02
+
+
+def test_kl_cov_penalizes_only_selected_tokens_and_clip_cov_only_drops_their_gradient():
+    from sili_quartz.actor_objective import CovControl
+
+    lp = torch.tensor([-0.1, -1.0, -2.0], requires_grad=True)
+    old = torch.tensor([-0.5, -1.0, -1.5])
+    pg = -lp * 1.0
+    mask = torch.tensor([True, False, False])
+    out = CovControl("kl").apply(pg, lp, old, mask)
+    assert torch.allclose(out - pg, torch.tensor([0.4, 0.0, 0.0]))
+    ctl = CovControl("clip", clip_prob=1.0)
+    out = ctl.apply(pg, lp, old, mask)
+    out.sum().backward()
+    assert lp.grad.tolist() == [0.0, -1.0, -1.0]  # the selected token gets no PPO gradient
