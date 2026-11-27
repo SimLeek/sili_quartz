@@ -190,6 +190,10 @@ An offline track; it does not need the game.
          the 60–100 actions that break a wood block), only between holds;
          or done offline on replay frames as a reachability test (can the
          key's logit be raised) with no game time at all.
+       - Its natural form (user): token energy with a very long time
+         constant. A key's energy builds very slowly while it goes unused
+         and forces one press after hours or days of disuse, then resets,
+         like a denervated neuron's spontaneous twitching.
      - Usage guard: k80, the number of keys covering 80 % of usage in a fixed
        30-minute window. It is about 6 (of ~30 used) for the untouched model,
        i.e. 80-20 (user). A2c's collapse went to 1 (99-1); energy's mashing to
