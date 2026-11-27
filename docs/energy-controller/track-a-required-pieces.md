@@ -140,9 +140,16 @@ After that the queue ends and the sandbox returns to desktop mode.
 
 An offline track; it does not need the game.
 
-1. **Scramble:** a tool that re-initializes the 74 key rows of the tied
-   embedding/output head (random, matched norm). The result is a checkpoint
-   whose keys are scrambled.
+1. **Scramble:** built (`tools/scramble_keys.py`). It re-initializes the
+   74 key rows of the tied embedding/output head (random direction, each
+   row's own norm kept). **The no-method control, measured:**
+   - **Keys:** the scrambled model presses no key at all (0 distinct keys in
+     120 sampled actions, against 13 for the untouched model).
+   - **Actions:** 41 of the 120 are the pure no-op; mouse moves survive.
+   - **Active fan-in:** drive toward the emitted keys falls from 18.6 to
+     4.0, spread over ~15,900 neurons (untouched ~4,300), overlap 0.08.
+   - **Pass mark for a method:** the key repertoire and k80 back in the
+     untouched model's range (about 6 keys covering 80 % of ~30 used).
 2. **Stage A harness:** on replay frames, sample with the grammar, apply the
    method's updates, and measure the repertoire and the active fan-in every
    N steps.
