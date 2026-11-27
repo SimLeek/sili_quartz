@@ -148,8 +148,9 @@ Added one piece at a time, as a ladder rather than a full grid:
 |---|---|---|
 | R1 | input and output tether only | Tchunk_c (queued) |
 | R1+E | the same columns and norm band with energy on, from the base model | FULLe_c (queued; FULL_c is its no-energy reference) |
-| R2 | state empowerment reward | not built; first validated offline (below) |
+| R2 | state empowerment reward | built (054a1c5, `--reward empower`); offline check first (below) |
 | R3 | energy on R2 | |
+| R2h | energy-homeostasis reward (section 8) instead of, then with, empowerment | not built |
 | R4 | freeze-gated sleep | |
 
 Controls already queued, each with its prediction written down here first:
@@ -165,6 +166,27 @@ Controls already queued, each with its prediction written down here first:
 estimate should be near 0 on pause, death and dialog frames and higher in the
 open world. If it is not, the estimator or the world model is not good enough
 yet, and R2 would only measure noise.
+
+## 8. Energy homeostasis as a policy reward (user, 2026-11-27)
+
+Bad energy states in the input columns should reach the output columns. This
+is homeostatic RL (Keramati and Gutkin 2014): the reward is the reduction in
+drive, where drive is how far an internal state sits from its set point.
+
+    r_t = D(e_t) - D(e_t+1),  D = distance of the input-column neurons' energy from equilibrium
+
+- **Static screen:** neurons that stay active exhaust, and silent ones need
+  forced firing, so the energy sits far from equilibrium and D is high. Moving
+  into a static screen gives negative reward, against the dark room.
+- **Chaotic input:** overactivity, also far from the set point.
+- **What gets rewarded:** actions that keep the input side in a healthy band, a
+  drive toward a "just right" amount of stimulation. Energy then becomes a
+  learning signal for the policy through the output columns, not only health.
+
+It overlaps with state empowerment (both punish the dark room), so it gets its
+own rung and its own comparison. It needs an energy measure per frame for the
+input chunks (forced fires and exhausted neurons, or the energy state's
+distance from equilibrium); not built.
 
 ## Where the literature runs out
 
