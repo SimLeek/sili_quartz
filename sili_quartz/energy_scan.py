@@ -112,8 +112,13 @@ class ScanEnergy:
     as in NeuronEnergy. `set_dose` writes the per-site dose tensors in place.
     """
 
-    def __init__(self, sites: list[ScanSite], decay_div: float = 40.0, batch: int = 1):
-        self.sites, self.decay_div, self.batch = sites, decay_div, batch
+    def __init__(self, sites: list[ScanSite], decay_div: float = 40.0, batch: int = 1, col: int = 0):
+        """col > 1: column-averaged energy. Each neuron keeps its own energy state and
+        decision, but the change energy makes to its output (fired/shut value minus
+        its own value) is averaged over its column of `col` contiguous neurons, so
+        one silenced or forced neuron moves the column by 1/col. Sites whose width
+        is not a multiple of col are left per-neuron."""
+        self.sites, self.decay_div, self.batch, self.col = sites, decay_div, batch, col
         self.enabled = True
         self.states: list[Tensor | None] = [None] * len(sites)
         self.doses: list[Tensor | None] = [None] * len(sites)
@@ -184,7 +189,12 @@ class ScanEnergy:
             gen = torch.Generator(device=h.device).manual_seed(self.step_seed * 1000 + i)
             noise = torch.randn(t, b * n, device=h.device, dtype=torch.float32, generator=gen)
         gate, const = energy_scan(x.detach(), self.states[i], noise, self.doses[i], site.scale)
-        out = x * gate + const
+        if self.col > 1 and n % self.col == 0:
+            delta = x * (gate - 1) + const  # energy's change to each neuron's output
+            out = x + delta.reshape(t, b * n // self.col, self.col).mean(-1, keepdim=True).expand(
+                t, b * n // self.col, self.col).reshape(t, b * n)
+        else:
+            out = x * gate + const
         self.fired[i].add_((gate == 0).sum())
         # forced to fire (const 2) or shut off while active; a held shut-off has const 0, so the
         # gate and the activity tell it apart from the dead zone

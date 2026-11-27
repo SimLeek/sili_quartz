@@ -422,3 +422,24 @@ def test_kl_cov_penalizes_only_selected_tokens_and_clip_cov_only_drops_their_gra
     out = ctl.apply(pg, lp, old, mask)
     out.sum().backward()
     assert lp.grad.tolist() == [0.0, -1.0, -1.0]  # the selected token gets no PPO gradient
+
+
+def test_column_averaged_energy_spreads_one_neurons_change_over_its_column():
+    from sili_quartz.energy_scan import ScanEnergy, ScanSite
+
+    def run(col):
+        en = ScanEnergy([ScanSite(torch.nn.Identity(), mean=1.0, cost=0.5)], decay_div=40.0, col=col)
+        en.set_dose(cost_scale=1.0, noise_scale=0.0)
+        x = torch.ones(1, 12, 8)
+        x[..., 0] = 3.0  # one loud neuron: it gets shut off; the other 7 sit at the mean
+        return en.apply(0, x), x
+
+    per, x = run(0)
+    colv, _ = run(8)
+    assert float(per[0, -1, 0]) == 0.0  # per neuron: the loud neuron is silenced outright
+    d = colv[0, -1] - x[0, -1]
+    assert torch.allclose(d, torch.full((8,), -3.0 / 8))  # its change is shared: -3/8 for every neuron
+    off = ScanEnergy([ScanSite(torch.nn.Identity(), mean=1.0, cost=0.5)], col=8)
+    off.set_dose(cost_scale=1.0, noise_scale=0.0)
+    y = torch.randn(1, 3, 8) * 0.01 + 1.0
+    assert torch.allclose(off.apply(0, y), y)  # no intervention, no change

@@ -1,14 +1,68 @@
 # Track A: required pieces (ledger, started 2026-11-27)
 
 Track A has moved from trying combinations to collecting the pieces a working
-setup needs. The sections read as **still to test** (plausible), **results**
-(required, keep off) and **won't do** (rejected). Update this file whenever a
-result moves a piece, with a link to the result.
+setup needs. The piece sections read as **still to test** (plausible),
+**results** (required, keep off) and **won't do** (rejected). Update this file
+whenever a result moves a piece, with a link to the result and a row in the
+lineage table.
 
-**How runs are set up from here (evolutionary):** each Minecraft run uses
-every *proven* required piece, respects every keep-off, and adds **one**
-plausible piece. If the piece improves the run, it moves to required; if it
-degrades it, it moves to keep off or rejected (with where and why).
+## Core requirements (user, 2026-11-27)
+
+Two things the learning itself must provide. Everything else (health
+metrics, renorms, sleep, guards) is an **improvement**. An improvement joins
+the required set only if it is shown to help in practically all cases.
+
+1. **Coherent token output.** The model keeps (and, from scratch, learns) the
+   output tokens it can use: the action keys, not a collapse onto one key or a
+   spread over all 74.
+   - **Check:** starting from a randomly initialized output, does the training
+     loop eventually learn the token repertoire?
+   - **Measured meanwhile:** key repertoire in play, and
+     `tools/repertoire_probe.py` against the base model's 11–25 keys per
+     10 minutes.
+2. **Coherent, input-driven action choice.** The output side has a drive that
+   makes its actions depend coherently on the world input (any input-coherent
+   RL).
+   - **Most promising candidate:** energy curiosity, unblocked by
+     column-averaged energy (below).
+
+## Method: evolution, recorded as a phylogenetic tree
+
+- **Rule:** each run uses every proven required piece, respects every keep
+  off, and adds **one** plausible piece (a trait).
+- **Root:** the tree starts from a subset of the required pieces in
+  combination, to confirm each is actually required (drop one, check it
+  breaks).
+- **Advancing:** a run that does well on the metrics (repertoire, input
+  coherence, world-model probe, game stats) advances: its children each try a
+  further trait. One that degrades marks that trait keep off (where) or
+  rejected.
+- **Recording:** the tree is a table. The node name is the chain of
+  additions; depth is shown with leading dashes; rows are in tree order. A
+  child row sits under its parent.
+
+### Lineage so far
+
+The runs before this ledger were not planned as a tree; they are placed as
+branches from the base model.
+
+| node | run(s) | result | status |
+|---|---|---|---|
+| base + grammar | A-0 baselines (no grammar), grammar smoke | parses 100 %; 11–25 keys per 10 min | root |
+| - +A1 MI reward | A1, A1c | narrowed to loops, then static screens | rejected |
+| - +A1-act MI reward | A1-act | pause menu for 85 min | rejected |
+| - +A2 reward | A2c | one key (hold LB) from minute 30 | rejected (as built) |
+| -- +one-sided entropy guard | A2g | ran away to random | keep off |
+| -- +two-sided entropy guard | A2b | oscillated between bounds | keep off |
+| -- +KL-Cov (rolling 0.2 %) | A2_klcov | ~0.2 tokens per step; still narrowed (confounded) | too weak as configured |
+| - +energy, site-mean set point, dose 1 | Eint_c (no training) | random within 5 min | keep off |
+| - +input tether, all 6 chunks | Tin_c | policy a by-product of prediction; death screen | keep off (output-side chunks) |
+| - +input tether, layers 1–12 | Tin3_c | no random output; fewer clicks, 9 deaths | plausible (needs a drive) |
+| -- +energy (input and interior), site mean | Tin3_e | random once at dose 1 | keep off |
+| --- +energy curiosity reward | Tin3_curio | drive read 0 (trainer energy from rest) | stopped; retry after column energy |
+| - +input and output tether, norm band | FULL_c | output random from minute 10 | keep off (output tether without a drive) |
+| -- +energy on the output neurons | FULLe_c | random from the start | keep off |
+| - (format bug, pre-grammar) | A1pa, A1io | broken completions, no gradient | led to grammar (required) |
 
 ## Plausible (still to test), roughly by how directly each addresses a known failure
 

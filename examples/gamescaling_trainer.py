@@ -144,6 +144,9 @@ def main() -> None:
     ap.add_argument("--w-rep", type=float, default=1.0)
     ap.add_argument("--w-pg", type=float, default=1.0)
     ap.add_argument("--w-health", type=float, default=1.0)
+    ap.add_argument("--energy-col", type=int, default=0,
+                    help="column-averaged energy: average energy's change to each neuron's output over columns "
+                         "of N contiguous neurons (actor and trainer must match; 0 = per neuron)")
     ap.add_argument("--energy-io-side", choices=("both", "in"), default="both",
                     help="with --energy-io: both = input and output neurons; in = input neurons only, no energy "
                          "on the action choice (actor and trainer must match)")
@@ -288,7 +291,7 @@ def main() -> None:
         assert a.dose.startswith("fixed:") and float(a.dose.split(":")[1]) > 0, "--reward energy needs --dose fixed:x"
     cols_t = torch.tensor(cols, device=a.device)
     energy = make_energy(model, mlp_means, attn_means, io_means=io_means if a.energy_io else None,
-                         n_choice=len(cols))
+                         n_choice=len(cols), col=a.energy_col)
     if a.reward == "energy":  # sites: MLP outputs per layer, then attention outputs per layer
         nl = len(mlp_means)
         energy.trace_sites = set(range(a.reward_layers)) | {nl + j for j in range(a.reward_layers)}

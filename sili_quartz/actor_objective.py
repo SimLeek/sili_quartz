@@ -88,7 +88,7 @@ def choice_columns(tok, vocab: list[int]) -> list[int]:
 
 
 def make_energy(model, mlp_means, attn_means, costs=TRACK_A_COSTS, decay_div=DECAY_DIV,
-                io_means=None, n_choice: int = 0) -> ScanEnergy:
+                io_means=None, n_choice: int = 0, col: int = 0) -> ScanEnergy:
     """Every site is scaled to its layer's MLP activations, so a cost is the same dose everywhere.
     io_means: also the input neurons (io_modules). n_choice > 0: also an output site over
     the action-choice probabilities (`output_energy`), scaled so a uniform spread is 1."""
@@ -104,7 +104,7 @@ def make_energy(model, mlp_means, attn_means, costs=TRACK_A_COSTS, decay_div=DEC
     if n_choice:
         out_index = len(sites)
         sites.append(ScanSite(nn.Identity(), 1.0, 1.0 / n_choice, costs[0]))
-    energy = ScanEnergy(sites, decay_div=decay_div)
+    energy = ScanEnergy(sites, decay_div=decay_div, col=col)
     energy.out_index = out_index
     return energy
 

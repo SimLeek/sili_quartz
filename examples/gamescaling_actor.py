@@ -142,6 +142,9 @@ def main():
                     help="start from a trainer checkpoint (the trainer must get the same --init)")
     ap.add_argument("--energy", action="store_true", help="energy on the model, dose from --dose-file")
     ap.add_argument("--dose-file", type=Path, default=None)
+    ap.add_argument("--energy-col", type=int, default=0,
+                    help="column-averaged energy: average energy's change to each neuron's output over columns "
+                         "of N contiguous neurons (actor and trainer must match; 0 = per neuron)")
     ap.add_argument("--energy-io-side", choices=("both", "in"), default="both",
                     help="with --energy-io: both = input and output neurons; in = input neurons only, no energy "
                          "on the action choice (actor and trainer must match)")
@@ -184,7 +187,8 @@ def main():
         if a.energy_io:
             io_means = measure_io_means(policy.model, lambda: policy.model(**inputs))
             cols = choice_columns(policy.tok, policy.vocab) if a.energy_io_side == "both" else []
-        energy = make_energy(policy.model, mlp_means, attn_means, io_means=io_means, n_choice=len(cols))
+        energy = make_energy(policy.model, mlp_means, attn_means, io_means=io_means, n_choice=len(cols),
+                             col=a.energy_col)
         energy.set_dose(cost_scale=0.0, noise_scale=0.0)
         policy.decoder.attn_post = decoder_attn_post(energy, len(mlp_means))
         if cols:
