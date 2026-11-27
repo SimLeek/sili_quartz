@@ -253,6 +253,12 @@ smallest controller that sets the dose, working before 3 and 4.
     per layer, much wider than the input): column means of the state match
     the input. Needs the state at each turn boundary, which the fused kernel
     does not return.
+  - Short trained thoughts (user, 2026-11-27): a goal of 5-8 tokens
+    ("I must get wood." -> "have wood, crafting table") carried in context and
+    trained with the RL policy. That costs ~50-100 ms per decision, not the
+    1-2 s of the base model's 50-200-token rationales, and gives the policy a
+    persistent intent. First: `tools/thought_influence.py` measures whether the
+    base model's thoughts change its actions at all.
   - Every arm is scored by `tools/world_model_probe.py`: ridge from the
     trained state to the untouched model's next-frame input on one fixed
     reference replay, against copy and current-frame baselines.
