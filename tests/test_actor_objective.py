@@ -356,3 +356,24 @@ def test_energy_trace_records_the_share_of_intervened_neurons_per_position_and_d
     d = energy_drive(en.trace, [(0, 40), (40, 80)])
     assert len(d) == 2 and all(0 <= x <= 1 for x in d)
     assert out.shape == (1, 80, 8)
+
+
+def test_energy_states_round_trip_so_a_replay_starts_where_the_actor_was():
+    from sili_quartz.energy_scan import ScanEnergy, ScanSite
+
+    def fresh():
+        en = ScanEnergy([ScanSite(torch.nn.Identity(), mean=1.0, cost=0.5)], decay_div=40.0)
+        en.set_dose(cost_scale=1.0, noise_scale=0.0)
+        return en
+
+    actor = fresh()
+    quiet = torch.zeros(1, 32, 8)
+    actor.apply(0, quiet)  # quiet stretch: drive builds up (fires every 5 tokens; 2 tokens past the last)
+    actor.intervened_count()
+    snap = actor.snapshot_states()
+    a_out = actor.apply(0, quiet[:, :3])
+    from_rest, from_snap = fresh(), fresh()
+    from_snap.load_states(snap, "cpu")
+    assert torch.equal(from_snap.apply(0, quiet[:, :3]), a_out)  # same state, same output
+    from_rest.apply(0, quiet[:, :3])
+    assert from_snap.intervened_count() > from_rest.intervened_count() == 0.0

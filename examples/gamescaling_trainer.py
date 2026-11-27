@@ -342,7 +342,19 @@ def main() -> None:
         d = dose_now()
         energy.enabled = d > 0
         energy.set_dose(cost_scale=d, noise_scale=d)
-        energy.begin_step(seed=a.seed * 1_000_003 + step)
+        # start from the actor's energy state at (or just before) the window, not from rest:
+        # the actor never resets its energy during a session
+        snap = None
+        if d > 0:
+            snaps = sorted(replay.glob("energy_*.pt"))
+            older = [q for q in snaps if int(q.stem.split("_")[1]) <= win[0]["n"]]
+            snap = older[-1] if older else None
+        if snap is not None:
+            try:
+                energy.load_states(torch.load(snap, map_location="cpu", weights_only=True), a.device)
+            except (OSError, RuntimeError, EOFError):
+                snap = None  # a file still being written
+        energy.begin_step(seed=a.seed * 1_000_003 + step, at_rest=snap is None)
         warm = not pi.ready()  # fill the pair bank first, forward only
         # logits only where an action token is predicted (the head is 248k wide)
         keep = torch.tensor([p - 1 for t in turns for p in t["action"]], device=a.device)
@@ -480,6 +492,7 @@ def main() -> None:
                "reward_mean": round(r_mean, 4), "logp_mean": round(float(lps.mean()), 3),
                "loss_pg": round(float(loss_pg), 4), "ppo_turns": matched, "pr": round(float(pr), 3), "floor": dual.floor,
                "lam": round(lam, 4), "ent": round(float(ent), 4), "floor_act": dual_act.floor,
+               "energy_snapshot": None if snap is None else int(snap.stem.split("_")[1]),
                "lam_act": round(dual_act.lam, 4), "ceil_act": dual_act.ceiling, "lam_act_hi": round(dual_act.lam_hi, 4), "dose": round(d, 4), "energy_changed": energy.changed_count() if d > 0 else 0,
                "grad_norm": round(grad_norm, 3), "tokens": int(ids.numel()), "seconds": round(time.time() - t0, 2), "synced": synced,
                "gpu_gib": round(torch.cuda.max_memory_allocated(a.device) / 2**30, 2)}

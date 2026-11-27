@@ -118,6 +118,7 @@ class ScanEnergy:
         self.states: list[Tensor | None] = [None] * len(sites)
         self.doses: list[Tensor | None] = [None] * len(sites)
         self.fired: list[Tensor | None] = [None] * len(sites)  # running device counters
+        self.intervened: list[Tensor | None] = [None] * len(sites)  # forced to fire or shut off
         self.mult = (1.0, 1.0, 1.0)
         # trace_sites: record, per call, the share of each position's neurons that energy
         # forced to fire or shut off (batch 1), in trace[site] (T,); None = off
@@ -171,6 +172,7 @@ class ScanEnergy:
             self.states[i] = torch.zeros(b * n, device=h.device, dtype=torch.float32)  # at rest
             self.doses[i] = torch.tensor(self._dose_values(site), device=h.device, dtype=torch.float32)
             self.fired[i] = torch.zeros((), device=h.device, dtype=torch.float32)
+            self.intervened[i] = torch.zeros((), device=h.device, dtype=torch.float32)
         x = h.transpose(0, 1).reshape(t, b * n)
         if self.step_seed is None:
             noise = torch.randn(t, b * n, device=h.device, dtype=torch.float32)
@@ -184,6 +186,7 @@ class ScanEnergy:
         gate, const = energy_scan(x.detach(), self.states[i], noise, self.doses[i], site.scale)
         out = x * gate + const
         self.fired[i].add_((gate == 0).sum())
+        self.intervened[i].add_((const != 0).sum())
         if self.trace_sites is not None and i in self.trace_sites and b == 1 and not one_step:
             self.trace[i] = (const != 0).float().mean(-1).detach()
         out = out.reshape(t, b, n).transpose(0, 1)
@@ -207,6 +210,29 @@ class ScanEnergy:
             if s.module is module:
                 return i
         return None
+
+    def load_states(self, states: list, device) -> None:
+        """Start from saved states (e.g. the actor's, `snapshot_states`) instead of
+        rest; entries that are None or of the wrong size are left as they are."""
+        for i, st in enumerate(states):
+            if st is None:
+                continue
+            self.states[i] = st.to(device=device, dtype=torch.float32).clone()
+            self.doses[i] = torch.tensor(self._dose_values(self.sites[i]), device=device, dtype=torch.float32)
+            self.fired[i] = torch.zeros((), device=device, dtype=torch.float32)
+            self.intervened[i] = torch.zeros((), device=device, dtype=torch.float32)
+
+    def snapshot_states(self) -> list:
+        """The current states on the CPU, for load_states."""
+        return [None if st is None else st.detach().cpu().clone() for st in self.states]
+
+    def intervened_count(self) -> float:
+        """Entries forced to fire or shut off since the last call. Syncs."""
+        total = sum(float(f) for f in self.intervened if f is not None)
+        for f in self.intervened:
+            if f is not None:
+                f.zero_()
+        return total
 
     def changed_count(self) -> float:
         """Entries changed (fired, shut off or dead-zoned) since the last call. Syncs."""

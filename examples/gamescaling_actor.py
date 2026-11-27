@@ -145,6 +145,9 @@ def main():
     ap.add_argument("--energy-io-side", choices=("both", "in"), default="both",
                     help="with --energy-io: both = input and output neurons; in = input neurons only, no energy "
                          "on the action choice (actor and trainer must match)")
+    ap.add_argument("--energy-snapshot-every", type=int, default=30,
+                    help="with --energy and --replay-dir: save the energy state every N decisions "
+                         "(replay/energy_<n>.pt), so the trainer replays from the actor's state, not from rest")
     ap.add_argument("--energy-io", action="store_true",
                     help="with --energy: also the input neurons (token embeddings, vision merger) and the "
                          "output neurons (action-choice probabilities)")
@@ -237,6 +240,8 @@ def main():
             parsed += action.parsed
             if saver is not None:
                 saver.submit(frame.save, a.replay_dir / f"{n:06d}.jpg", quality=90)
+                if energy is not None and a.energy_snapshot_every and n % a.energy_snapshot_every == 0:
+                    saver.submit(torch.save, energy.snapshot_states(), a.replay_dir / f"energy_{n:06d}.pt")
             row = {"t": round(time.time(), 3), "n": n, "parsed": action.parsed, "truncated": action.truncated,
                    "text": action.text, "raw": completion, "dropped": action.dropped,
                    "seconds": round(policy.last_seconds, 3), "prompt_tokens": policy.last_prompt_tokens,
@@ -249,6 +254,7 @@ def main():
                 row["synced_updates"] = applier.applied_updates
             if energy is not None:
                 row["dose"] = dose
+                row["energy_intervened"] = energy.intervened_count()
             if a.log:
                 with open(a.log, "a") as fh:
                     fh.write(json.dumps(row) + "\n")
