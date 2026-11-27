@@ -42,3 +42,26 @@ only through each neuron's own weighted sum.
 4. **What does hold:** energy covers factorized, feature-level novelty over a
    learned representation. Joint episodic memory and generalizing
    (RND-style) novelty are outside it.
+
+## Which gaps are additions to energy, and which need another system (laws 5–10)
+
+- **Extra per-neuron state** (energy on x², x³, …) separates the example
+  above: feature 1's squared activity sums to 4 after A and 16 after B.
+- **It cannot separate histories in general.** With binary features and no
+  forgetting, take C = (1,0), (0,1) and D = (1,1), (0,0). Every per-feature
+  moment of every order is equal (for binary values xᵏ = x), but the
+  conjunction x1·x2 sums to 0 after C and 1 after D.
+- **So joint novelty needs cross-neuron state.**
+
+| gap | addition to energy? | separate system? | alternative to test against energy |
+|---|---|---|---|
+| pixel-level novelty | yes: energy on the input neurons (a setting) | no | — |
+| concept-level novelty | yes: energy on internal neurons (a setting; deeper encodes concepts) | no | — |
+| joint novelty of conjunctions the network represents | yes: covered by internal energy | no | — |
+| joint novelty in general (which combinations occurred) | only through conjunctive units: energy on neurons or columns that encode co-activation; no per-neuron moment of any order suffices | an episodic memory of whole states (fits TODO 4, the hippocampus) | episodic novelty on internal features |
+| generalizing novelty (RND) | its distinct part is inductive bias: internal energy generalizes through shared learned features | only as a check | RND on internal features |
+
+**For the code:** drives stay one energy module, configured by site (input,
+internal depth) and, if needed, conjunctive units. Episodic memory belongs
+with the hippocampus work, not in a drive module. RND is kept only as an
+outside check.

@@ -70,3 +70,54 @@ law novelty_after_A:
 # LAW 4. Episodic novelty of (4,0) after B is 0: it was seen.
 law novelty_after_B:
   {Nov.novelty(4n, 0n, 0n, 1n, 0n, 0n, 4n, 0n) == 0n : Nat}
+
+# --- Which fixes are additions to energy, and which need another system ---
+#
+# Extra per-neuron state (energy on x^2, x^3, ...) separates A and B above:
+# with forgetting, feature 1's squared activity sums to 4 after A and 16
+# after B (laws 5, 6). But it cannot separate histories in general. Take
+# binary features and no forgetting (every frame weighs 1):
+#   C = (1,0), (0,1)     D = (1,1), (0,0).
+# For binary values x^k = x, so every per-feature moment of every order is
+# the same after C and D (laws 7, 8): no per-neuron energy extension tells
+# them apart. A conjunction does: the sum of x1 * x2 is 0 after C and 1 after
+# D (laws 9, 10). Joint novelty needs cross-neuron (conjunctive) state:
+# neurons that encode the conjunction, or a memory of whole frames.
+
+# weighted sum of squares, weights 4, 2, 1 (forgetting 1/2, as Nov.state)
+def Nov.state_sq(+x0: Nat, +x1: Nat, +x2: Nat) -> Nat:
+  Nov.state(Nat.mul(x0, x0), Nat.mul(x1, x1), Nat.mul(x2, x2))
+
+# unweighted (no forgetting) two-frame sums
+def Nov.sum2(a: Nat, b: Nat) -> Nat:
+  Nat.add(a, b)
+
+def Nov.cross2(a1: Nat, a2: Nat, b1: Nat, b2: Nat) -> Nat:
+  Nat.add(Nat.mul(a1, a2), Nat.mul(b1, b2))
+
+# LAW 5. Second-order state of feature 1 after A (1, 0, 0) is 4.
+law second_order_A:
+  {Nov.state_sq(1n, 0n, 0n) == 4n : Nat}
+
+# LAW 6. Second-order state of feature 1 after B (0, 0, 4) is 16: second-order
+# energy separates A and B.
+law second_order_B:
+  {Nov.state_sq(0n, 0n, 4n) == 16n : Nat}
+
+# LAW 7. Binary, no forgetting: feature 1 counts are equal after C (1, 0) and
+# D (1, 0); feature 2 counts are equal after C (0, 1) and D (1, 0).
+law binary_counts_equal_f2:
+  {Nov.sum2(0n, 1n) == Nov.sum2(1n, 0n) : Nat}
+
+# LAW 8. For binary values the squares are the values, so second-order counts
+# are equal too (shown for feature 2; higher orders follow the same way).
+law binary_squares_equal_f2:
+  {Nov.sum2(Nat.mul(0n, 0n), Nat.mul(1n, 1n)) == Nov.sum2(Nat.mul(1n, 1n), Nat.mul(0n, 0n)) : Nat}
+
+# LAW 9. The conjunction x1 * x2 sums to 0 after C = (1,0), (0,1).
+law conjunction_C:
+  {Nov.cross2(1n, 0n, 0n, 1n) == 0n : Nat}
+
+# LAW 10. ... and to 1 after D = (1,1), (0,0): conjunctive state separates them.
+law conjunction_D:
+  {Nov.cross2(1n, 1n, 0n, 0n) == 1n : Nat}
