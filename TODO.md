@@ -272,7 +272,12 @@ smallest controller that sets the dose, working before 3 and 4.
     - sleep-phase fan-in consolidation: for each output token, trace and
       strengthen the path that can trigger it back through the network
       (possibly a computed fan-in), then make it coherent with the rest of the
-      model during sleep, so every token stays reachable.
+      model during sleep, so every token stays reachable. The fan-ins must be
+      **exclusive** (user): strengthening one token's path must not raise the
+      others, so tokens stay mutually exclusive. Measure how much each token's
+      fan-in overlaps the other tokens' (and the shared non-token neurons'),
+      and consolidate the exclusive part. Related: lateral inhibition, and the
+      channel-orthogonality penalty from sili_peridot's rank control.
   - Every arm is scored by `tools/world_model_probe.py`: ridge from the
     trained state to the untouched model's next-frame input on one fixed
     reference replay, against copy and current-frame baselines.
