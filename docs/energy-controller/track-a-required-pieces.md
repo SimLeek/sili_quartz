@@ -180,6 +180,16 @@ An offline track; it does not need the game.
      - Floor for consolidation (proposed): a key is fading when its capacity
        falls below the untouched model's weakest-key ratio, 0.83× the current
        median capacity. A measured anchor.
+       - The floor is on *capacity* (weights, through the key's direct
+         fan-in), not on presses: it has no time window and never makes the
+         policy press a key. Keys that do nothing in the current situation
+         may stay very rare (user: some keys go a whole day unpressed).
+       - Forced use of rare keys (to check they still come out and to learn
+         associations) is a separate exploration trait. If added: a small
+         per-key budget, never during a committed sequence (holding LB for
+         the 60–100 actions that break a wood block), only between holds;
+         or done offline on replay frames as a reachability test (can the
+         key's logit be raised) with no game time at all.
      - Usage guard: k80, the number of keys covering 80 % of usage in a fixed
        30-minute window. It is about 6 (of ~30 used) for the untouched model,
        i.e. 80-20 (user). A2c's collapse went to 1 (99-1); energy's mashing to
