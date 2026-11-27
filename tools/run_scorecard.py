@@ -120,7 +120,10 @@ def game(run: Path) -> dict:
 
 
 def pauses(run: Path) -> dict:
-    """The dark-room signal: how often the policy paused the game (the game log's "Saving and pausing game" lines
+    """The dark-room signal. Energy curiosity should visit the dark room and leave on its own (where it settles
+    between dark room and chaos depends on its settings and on how predictable the world is); a failing method
+    stays. So the dwell matters more than the count: still-screen episodes, how long, and whether the policy left
+    on its own. Also how often the policy paused the game (the game log's "Saving and pausing game" lines
     during the run, per hour of the session), how often the watcher found it parked in the pause menu and pressed Esc,
     and whether a hang ended the run (copied logs: game_latest.log, mc_watch.log; the game log covers the session
     since the game's last launch)."""
@@ -152,6 +155,14 @@ def pauses(run: Path) -> dict:
                 pass
         out["esc_resumes"] = sum(1 for e in ev if str(e.get("event", "")).startswith("paused: pressed Esc"))
         out["ended_by_hang"] = any(str(e.get("event", "")).startswith("hang:") for e in ev)
+        # dark-room dwell: still-screen episodes (>= 30 s) during the run, and how they ended
+        still = sorted((e for e in ev if e.get("event") == "still episode" and t0 <= e.get("t", 0) <= t1 + 300),
+                       key=lambda e: e["seconds"])
+        if still:
+            out["still_episodes"] = len(still)
+            out["still_median_s"] = still[len(still) // 2]["seconds"]
+            out["still_max_s"] = still[-1]["seconds"]
+            out["still_self_exit_share"] = round(sum(e["ended_by"] == "self" for e in still) / len(still), 3)
     return out
 
 

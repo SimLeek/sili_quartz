@@ -179,8 +179,17 @@ tree and the pieces here are updated from them.
     These trends are read against the untouched runs' own trends; even Root_g
     mines less in its second half (the trees near spawn are used up first).
   - health is a constraint, not the goal.
-  - **The dark-room signal** (user): a policy should not choose the pause menu
-    and stay there.
+  - **The dark-room signal** (user): energy curiosity should *visit* the dark
+    room and leave on its own, since boredom builds energy and pushes it out.
+    Where it settles between dark room and chaos depends on its settings and on
+    how predictable the world is. Other methods have stayed forever (A1-act:
+    85 minutes in the pause menu). So the **dwell** is the measure, not the
+    count:
+    - **Still-screen episodes** (unchanged ≥ 30 s): number, median and longest
+      dwell, and the share that ended on the policy's own (`self`), as opposed
+      to `esc` (the watcher) or `hang`.
+    - **Healthy energy:** many short visits, all ending `self`. **Failure:**
+      long dwells ending `esc` or `hang`.
     - **Pauses per hour:** from the game log's "Saving and pausing game"
       lines. Earlier sessions logged 66–247 pauses each.
     - **Esc resumes:** when the screen stays frozen for 3 minutes on a pause,

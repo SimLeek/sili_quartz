@@ -383,7 +383,7 @@ def log_tail(n_bytes: int = 65536) -> str:
 
 
 def watch(poll_s: float = 0.5, relaunch_every_s: float = 10.0, wait_s: float = 240.0,
-          hang_s: float = 180.0, hang_check_s: float = 15.0) -> None:
+          hang_s: float = 180.0, hang_check_s: float = 15.0, still_s: float = 30.0) -> None:
     """Keep the game up and in front: relaunch it into the world (no reset)
     when it is not running, and run focus_guard every poll. If the screen has
     not changed at all for hang_s:
@@ -393,6 +393,10 @@ def watch(poll_s: float = 0.5, relaunch_every_s: float = 10.0, wait_s: float = 2
       so a policy that keeps going back shows up as a rising count;
     - otherwise the game hung: kill it and end the run (stop the actor, so the
       session finishes and the kill is its ending reason).
+    Every still-screen episode of at least still_s is logged when it ends
+    ("still episode", seconds, ended_by self | esc | hang): energy curiosity
+    should visit the dark room and leave on its own; a method that stays shows
+    long episodes ended by esc or hang.
     One JSON line per event."""
     last_check = last_hang_check = 0.0
     last_hash, same_since = None, time.time()
@@ -403,6 +407,9 @@ def watch(poll_s: float = 0.5, relaunch_every_s: float = 10.0, wait_s: float = 2
             last_hang_check = now
             h = screen_hash()
             if h is None or h != last_hash:
+                if last_hash is not None and now - same_since >= still_s:
+                    print(json.dumps({"t": now, "event": "still episode", "seconds": round(now - same_since),
+                                      "ended_by": "self"}), flush=True)
                 last_hash, same_since = h, now
             elif now - same_since >= hang_s:
                 paused_at = last_pause_time(log_tail())
@@ -414,9 +421,13 @@ def watch(poll_s: float = 0.5, relaunch_every_s: float = 10.0, wait_s: float = 2
                         subprocess.run(["xdotool", "key", "--window", ids[0], "Escape"], env={**os.environ, **X_ENV})
                     print(json.dumps({"t": now, "event": "paused: pressed Esc", "pause_n": pause_n,
                                       "paused_for_s": round(now - same_since)}), flush=True)
+                    print(json.dumps({"t": now, "event": "still episode", "seconds": round(now - same_since),
+                                      "ended_by": "esc"}), flush=True)
                 else:
                     print(json.dumps({"t": now, "event": f"hang: screen unchanged for {now - same_since:.0f} s, "
                                                          "killing the game and ending the run"}), flush=True)
+                    print(json.dumps({"t": now, "event": "still episode", "seconds": round(now - same_since),
+                                      "ended_by": "hang"}), flush=True)
                     stop()
                     subprocess.run(["pkill", "-f", "[g]amescaling_actor.py"])
                     last_check = 0.0
