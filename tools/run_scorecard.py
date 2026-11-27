@@ -14,7 +14,11 @@ Per 10-minute window, from the parsed decisions:
 - mean log-prob per sampled token, as the actor sampled it (certainty);
 - energy interventions per decision, when logged.
 Game, from the stats log: play minutes, deaths, blocks mined, items picked up,
-metres travelled, per hour of play.
+metres travelled (per hour of play), distinct block types, logs, crafting,
+how far the tutorial got, and the within-run trend of the mining and pickup
+rates (second half minus first half). Trend of the play metrics: last third of
+the windows minus the first third (the first minutes are the base model, so
+each run is its own control).
 
 Against the reference run (the untouched model with grammar, Root_g):
 - deviation: per window, the mean relative distance from the reference's mean
@@ -83,17 +87,50 @@ def windows(run: Path, minutes: int = 10) -> list[dict]:
     return out
 
 
+TUTORIAL = ["movement", "find_tree", "punch_tree", "open_inventory", "craft_planks", "none"]
+
+
 def game(run: Path) -> dict:
+    """Capability, from the stats log: rates per hour of play, distinct block types, crafting, how far the
+    tutorial got, and the within-run trend (second half of the run against the first)."""
     p = run / "stats.jsonl"
     if not p.exists():
         return {}
-    last = [json.loads(l) for l in open(p)][-1]["stats"]
+    rows = [json.loads(l)["stats"] for l in open(p)]
+    last = rows[-1]
     hours = max(last.get("play_ticks", 0) / 72000, 1e-6)
-    return {"play_min": round(last.get("play_ticks", 0) / 1200, 1),
-            "deaths_per_h": round(last.get("deaths", 0) / hours, 1),
-            "mined_per_h": round(last.get("mined", 0) / hours, 1),
-            "picked_per_h": round(last.get("picked_up", 0) / hours, 1),
-            "metres_per_h": round(last.get("distance_cm", 0) / 100 / hours)}
+    tut = (last.get("options_changed") or {}).get("tutorialStep")
+    step = tut[1] if tut else "punch_tree"
+    out = {"play_min": round(last.get("play_ticks", 0) / 1200, 1),
+           "deaths_per_h": round(last.get("deaths", 0) / hours, 1),
+           "mined_per_h": round(last.get("mined", 0) / hours, 1),
+           "picked_per_h": round(last.get("picked_up", 0) / hours, 1),
+           "metres_per_h": round(last.get("distance_cm", 0) / 100 / hours),
+           "distinct_blocks": last.get("distinct_blocks_mined", 0),
+           "logs": last.get("logs_mined", 0), "crafted": last.get("crafted", 0),
+           "planks": last.get("planks_crafted", 0), "crafting_tables": last.get("crafting_tables_crafted", 0),
+           "tutorial": TUTORIAL.index(step) if step in TUTORIAL else None}
+    mid = next((r for r in rows if r.get("play_ticks", 0) >= last.get("play_ticks", 0) / 2), None)
+    if mid is not None and 0 < mid.get("play_ticks", 0) < last.get("play_ticks", 0):
+        h1, h2 = mid["play_ticks"] / 72000, (last["play_ticks"] - mid["play_ticks"]) / 72000
+        out["mined_per_h_trend"] = round((last.get("mined", 0) - mid.get("mined", 0)) / h2 - mid.get("mined", 0) / h1, 1)
+        out["picked_per_h_trend"] = round((last.get("picked_up", 0) - mid.get("picked_up", 0)) / h2
+                                          - mid.get("picked_up", 0) / h1, 1)
+    return out
+
+
+def trend(ws: list[dict]) -> dict:
+    """Within-run trend of the play metrics: mean of the last third of the windows minus the first third."""
+    if len(ws) < 3:
+        return {}
+    n = max(1, len(ws) // 3)
+    out = {}
+    for f in ("distinct_ratio", "k80", "key_entropy", "distinct_keys_per_decision", "deviation"):
+        a = [w[f] for w in ws[:n] if w.get(f) is not None]
+        b = [w[f] for w in ws[-n:] if w.get(f) is not None]
+        if a and b:
+            out[f] = round(sum(b) / len(b) - sum(a) / len(a), 3)
+    return out
 
 
 def main() -> None:
@@ -127,7 +164,7 @@ def main() -> None:
         row = {"run": run.name, "windows": len(ws), "healthy_windows": healthy,
                "median_deviation": devs[len(devs) // 2] if devs else None,
                "first_flag_minute": next((w["minute"] for w in ws if w["flags"]), None),
-               "game": game(run), "per_window": ws}
+               "game": game(run), "trend": trend(ws), "per_window": ws}
         print(f"{run.name:24s} healthy {healthy}/{len(ws)} windows, median deviation {row['median_deviation']}, "
               f"first flag at minute {row['first_flag_minute']}, "
               f"game {row['game']}")

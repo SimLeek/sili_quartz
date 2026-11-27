@@ -61,7 +61,10 @@ def main() -> None:
     ap.add_argument("--k", type=int, default=4)
     ap.add_argument("--model", default=os.path.expanduser("~/models/GameScaling-0.8B-work"))
     ap.add_argument("--device", default="cuda:0")
-    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--seed", type=int, default=0, help="which states are drawn")
+    ap.add_argument("--sample-seed", type=int, default=None,
+                    help="seed of the action sampling (default: --seed); vary it on fixed states to measure the "
+                         "probe's own sampling noise")
     ap.add_argument("--out", type=Path, required=True)
     a = ap.parse_args()
 
@@ -88,7 +91,7 @@ def main() -> None:
             load_checkpoint(model, name)
         pol = GameScalingPolicy(model, proc, system, history_len=5, temperature=1.0, fast_decode=True)
         pol.grammar = ActionGrammar(pol.tok, pol.vocab, pol.max_new_tokens)
-        pol.generator = torch.Generator(device=a.device).manual_seed(a.seed)
+        pol.generator = torch.Generator(device=a.device).manual_seed(a.seed if a.sample_seed is None else a.sample_seed)
         keys, actions, mice, lps = collections.Counter(), [], [], []
         per_state: list[list[frozenset]] = []
         for run, rows, i in states:
@@ -115,7 +118,7 @@ def main() -> None:
         n = sum(keys.values())
         ent = -sum(v / n * math.log2(v / n) for v in keys.values()) if n else 0.0
         mice.sort()
-        row = {"model": name, "actions": len(actions), "distinct_actions": len(set(actions)),
+        row = {"model": name, "sample_seed": a.seed if a.sample_seed is None else a.sample_seed, "actions": len(actions), "distinct_actions": len(set(actions)),
                "distinct_keys": len(keys), "key_entropy_bits": round(ent, 3),
                "lb_share": round(sum("LB" in parse(t)[1] for t in actions) / len(actions), 3),
                "mouse_median": mice[len(mice) // 2] if mice else None,
