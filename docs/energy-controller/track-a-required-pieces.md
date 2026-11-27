@@ -154,9 +154,14 @@ An offline track; it does not need the game.
    - token energy (virtual neurons; it changes sampling only, so it needs a
      drive's gradient and belongs in stage B);
    - Clip-Cov/KL-Cov with a larger fraction.
-   - **Open:** what the target repertoire is when nothing in the data says
-     which keys exist. Candidates: uniform over the key vocabulary, or the
-     base model's own usage statistics as a measured anchor.
+   - **Settled (user): no target usage distribution.** Forcing uniform usage
+     would override the model's choices. The method keeps each key
+     *reachable*: an exclusive set of driving neurons with enough capacity
+     that the policy can pick the key. How often it is picked stays the
+     policy's choice.
+     - From random init, every key starts equal, so usage comes out uniform.
+     - From a trained model, the existing usage statistics are kept.
+     - Fan-in consolidation fits this; a uniform-usage target does not.
 4. **Stage B:** the winning method plus the advancing drive, live.
 
 ## Plausible (still to test), roughly by how directly each addresses a known failure
