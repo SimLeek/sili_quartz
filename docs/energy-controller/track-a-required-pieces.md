@@ -189,9 +189,14 @@ An offline track; it does not need the game.
      versus a separator or space*. The untouched model's key rows share a
      component that many neurons push together; scrambling (or random init)
      removes it.
-   - **Next version:** add the key-versus-separator margin at key slots as a
-     second measure and floor, and consolidate that shared direction too.
-     Tokens need a shared class pathway plus exclusive identity pathways.
+   - **Not a shared class pathway (user):** neurons that push all keys
+     together fail mutual exclusivity one layer back. The fix keeps strict
+     exclusivity but defines it against **every token that competes at the
+     slot**: the other keys *and* the space, separator and end-tag tokens. v1
+     only used the other keys, so nothing made a key beat the separators.
+   - **v2** (`--competitors vocab`): exclusive drive against all
+     action-vocabulary rivals, and updates with every rival's direction
+     projected out. Running on the scrambled model and the control.
 4. **Methods, one node each:**
    - exclusive fan-in consolidation (a weight update by itself);
    - token energy (virtual neurons; it changes sampling only, so it needs a

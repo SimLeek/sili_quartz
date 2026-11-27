@@ -10,7 +10,9 @@ without using which keys were pressed (no behaviour cloning):
    output projection and the MLP down-projection, last --chunk layers) are
    partitioned among the keys, each neuron to the key it pushes hardest
    relative to every other key (exclusive drive F[t, j] - max_{u != t} F[u, j],
-   F = direct path through the final norm and the tied head). Each key keeps at
+   F = direct path through the final norm and the tied head; with
+   --competitors vocab the rivals are every action-vocabulary token that can
+   win the slot, separators and spaces included). Each key keeps at
    most n_neurons / n_keys of them (a partition).
 2. Capacity of key t: the 95th percentile, over all action-token positions of
    the replay windows, of the push its exclusive neurons give t's logit
@@ -20,7 +22,8 @@ without using which keys were pressed (no behaviour cloning):
 4. Update (one round): for each key below the floor, every exclusive neuron's
    write column moves a step --eta toward the key's direction (embedding row
    times the final-norm gain, centered over the action vocabulary), with the
-   other keys' directions projected out, then is renormalized to its old norm.
+   rivals' directions projected out (no pathway shared between tokens), then
+   is renormalized to its old norm.
 
 Writes the changed weights as a trainer-style checkpoint (--out-ckpt).
 """
@@ -60,6 +63,9 @@ def main() -> None:
     ap.add_argument("--floor", type=float, default=0.71)
     ap.add_argument("--eta", type=float, default=0.1)
     ap.add_argument("--rounds", type=int, default=4)
+    ap.add_argument("--competitors", choices=("keys", "vocab"), default="vocab",
+                    help="exclusivity against the other keys only (v1) or against every action-vocabulary token "
+                         "that competes at the slot, separators and spaces included (v2, default)")
     ap.add_argument("--model", default=os.path.expanduser("~/models/GameScaling-0.8B-work"))
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--seed", type=int, default=0)
@@ -110,22 +116,32 @@ def main() -> None:
         ids = inp["input_ids"][0].tolist()
         action_pos.append(sorted({q - 1 for t in turn_positions(ids, tok, prefill="<|action_start|") for q in t["action"]}))
 
-    def key_dirs():
+    non_key = [i for i in range(len(vocab)) if i not in set(key_rows)]
+
+    def vocab_dirs():
+        """Directions of every action-vocab token (centered, through the final-norm gain): keys first."""
         with torch.no_grad():
             emb = model.get_input_embeddings().weight[vocab].float()
             emb = emb - emb.mean(0)
-            return emb[key_rows] * (1.0 + lm.norm.weight.float())  # (K, d)
+            emb = emb * (1.0 + lm.norm.weight.float())
+            return emb[key_rows], emb[non_key]
+
+    def key_dirs():
+        return vocab_dirs()[0]
 
     def measure():
         """Activations at action positions, exclusive sets, capacities."""
-        e = key_dirs()
+        e, e_other = vocab_dirs()
         with torch.no_grad():
             F = torch.cat([e @ m.weight.float() for m in mods], 1)  # (K, N)
+            G = torch.cat([e_other @ m.weight.float() for m in mods], 1) if a.competitors == "vocab" else None
         others = F.clone()
         excl = torch.empty_like(F)
+        g_max = G.max(0).values if G is not None else None
         for t in range(F.shape[0]):
             others[t] = float("-inf")
-            excl[t] = F[t] - others.max(0).values
+            rival = others.max(0).values if g_max is None else torch.maximum(others.max(0).values, g_max)
+            excl[t] = F[t] - rival
             others[t] = F[t]
         owner = excl.argmax(0)  # each neuron to the key it pushes hardest, relatively
         quota = F.shape[1] // F.shape[0]
@@ -166,8 +182,9 @@ def main() -> None:
         log.append(row)
         if rnd == a.rounds or not below:
             break
-        e = key_dirs()
+        e, e_other = vocab_dirs()
         eu = e / e.norm(dim=1, keepdim=True)
+        ou = e_other / e_other.norm(dim=1, keepdim=True)
         with torch.no_grad():
             offs = 0
             for m in mods:
@@ -176,7 +193,7 @@ def main() -> None:
                     cols = member[t, offs:offs + n].nonzero().view(-1)
                     if not cols.numel():
                         continue
-                    others = torch.cat([eu[:t], eu[t + 1:]])  # (K-1, d)
+                    others = torch.cat([eu[:t], eu[t + 1:]] + ([ou] if a.competitors == "vocab" else []))
                     q, _ = torch.linalg.qr(others.T)  # orthonormal basis of the other keys' directions
                     d = eu[t] - q @ (q.T @ eu[t])
                     d = d / d.norm()
