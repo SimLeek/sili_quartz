@@ -193,7 +193,11 @@ tree and the pieces here are updated from them.
     events)?
   - Did the policy respond (log-probs shift, PPO turns matched)?
   - Is the result robust to its knob? The winner is swept at learning rate
-    and dose ¼×, 1×, 4× and reported by its **worst case**.
+    and dose ¼×, 1×, 4×, and the **whole spread** is reported: every point,
+    best (optimality), worst (robustness), range, and whether the best sits
+    at an edge (then the sweep should extend). If one value is best on every
+    metric and stays best in other contexts, it is a setpoint, not a knob
+    (user).
   - A dead signal is a bug or a setting. A live signal with worse behaviour
     is the objective.
 

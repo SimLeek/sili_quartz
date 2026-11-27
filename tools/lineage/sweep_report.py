@@ -1,6 +1,7 @@
-"""Robustness of the winner to its main knobs: learning rate and training-energy dose at 1/4x, 1x, 4x.
-usage: python3 sweep_report.py WINNER -> one line per knob: coherence and health at each value, and the worst case.
-A method that only works at one value is fragile; report the worst case, not the best."""
+"""The winner's knob sweep, reported as the whole spread (learning rate and training-energy dose at 1/4x, 1x, 4x).
+usage: python3 sweep_report.py WINNER -> per knob: every point, best, worst, range, whether the best is at an edge.
+Worst case = robustness; best = optimality; both matter. If one value is best on every metric, and stays best in
+other contexts, it is a setpoint, not a knob. A best at an edge means the sweep should extend past it."""
 import json, os, sys
 E = os.path.expanduser("~/runs/eval")
 BASE_KEYS, BASE_DRIVE, BASE_OVERLAP = 13, 18.57, 0.188
@@ -16,10 +17,23 @@ def score(tag):
     if fa:
         ok &= not (fa["mean_drive"] < 0.9 * BASE_DRIVE and fa["mean_overlap"] > BASE_OVERLAP + 0.01)
     return {"healthy": ok, "coherence": (rp or {}).get("coherence"), "deviation": sc.get("median_deviation"),
-            "mined_per_h": sc.get("game", {}).get("mined_per_h")}
+            "mined_per_h": sc.get("game", {}).get("mined_per_h"), "distinct_blocks": sc.get("game", {}).get("distinct_blocks")}
+# metric -> True if higher is better
+METRICS = {"coherence": True, "deviation": False, "mined_per_h": True, "distinct_blocks": True}
 w = sys.argv[1]
 for knob, tags in (("lr", (f"{w}_lrq", w, f"{w}_lr4")), ("dose", (f"{w}_doseq", w, f"{w}_dose4"))):
-    s = [score(t) for t in tags]
-    cohs = [x["coherence"] for x in s if x and x["coherence"] is not None]
-    print(f"SWEEP {w} {knob} 1/4x,1x,4x: {s}; worst coherence {min(cohs) if cohs else None}; "
-          f"healthy at all values {all(x and x['healthy'] for x in s)}")
+    pts = dict(zip(("1/4x", "1x", "4x"), (score(t) for t in tags)))
+    print(f"SWEEP {w} {knob}: " + "; ".join(f"{k}={v}" for k, v in pts.items()))
+    bests = {}
+    for m, up in METRICS.items():
+        vals = {k: v[m] for k, v in pts.items() if v and v.get(m) is not None}
+        if len(vals) < 2:
+            continue
+        best = (max if up else min)(vals, key=vals.get)
+        worst = (min if up else max)(vals, key=vals.get)
+        bests[m] = best
+        edge = " (best at an edge: extend the sweep)" if best in ("1/4x", "4x") else ""
+        print(f"  {m}: best {best} {vals[best]}, worst {worst} {vals[worst]}, range {abs(vals[best] - vals[worst]):.4g}{edge}")
+    agree = len(set(bests.values())) == 1 if bests else False
+    healthy_all = all(v and v["healthy"] for v in pts.values())
+    print(f"  metrics agree on the best value: {agree} ({bests}); healthy at every value: {healthy_all}")
