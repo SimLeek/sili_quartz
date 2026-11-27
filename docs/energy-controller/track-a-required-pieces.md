@@ -176,7 +176,23 @@ An offline track; it does not need the game.
    - **Control, no method:** expected to stay stuck.
    - **Control, the method on the base model's own rows:** it must not erase
      an existing repertoire.
-3. **Methods, one node each:**
+3. **First result, fan-in consolidation v1** (`tools/fanin_consolidate.py`,
+   4 rounds, floor 0.71× median):
+   - **Untouched model (control):** repertoire kept (15 keys, entropy 2.73,
+     LB share 0.375; base 13, 2.46, 0.38). Passes: consolidation does not erase
+     a repertoire.
+   - **Scrambled keys:** capacity rose to the untouched model's level (median
+     0.60 → 0.94, keys below the floor 25 → 6), but the model still almost
+     never presses a key (2 presses in 120 actions; 0 before).
+   - **Reading:** exclusive sets carry each key's *identity*, not the shared
+     "press a key now" pathway. At a key slot the choice is first *a key
+     versus a separator or space*. The untouched model's key rows share a
+     component that many neurons push together; scrambling (or random init)
+     removes it.
+   - **Next version:** add the key-versus-separator margin at key slots as a
+     second measure and floor, and consolidate that shared direction too.
+     Tokens need a shared class pathway plus exclusive identity pathways.
+4. **Methods, one node each:**
    - exclusive fan-in consolidation (a weight update by itself);
    - token energy (virtual neurons; it changes sampling only, so it needs a
      drive's gradient and belongs in stage B);
@@ -221,7 +237,7 @@ An offline track; it does not need the game.
      - Research: no study found fitting per-key usage in games (closest:
        W-A-S-D concentration, heavy-tailed player behaviour, log-normal
        achievement counts and action timing).
-4. **Stage B:** the winning method plus the advancing drive, live.
+5. **Stage B:** the winning method plus the advancing drive, live.
 
 ## Plausible (still to test), roughly by how directly each addresses a known failure
 
