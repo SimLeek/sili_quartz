@@ -108,7 +108,27 @@ branches from the base model.
 | 2 | smoke test, then Tin3_et | energy in training only (fixed:33, the text runs' dose; actor plays clean), on the Tin3 node | whether training under energy hurts or helps play when the actor itself plays clean |
 | 3 | Tin3_et_curio | the energy-curiosity reward on the output side | the first candidate drive for core requirement 2 |
 
-After that the queue ends and the sandbox returns to desktop mode.
+Then queue 24 runs unattended:
+
+1. **Evaluate** Root_g, Tin3_c, Tin3_et and Tin3_et_curio. For each node,
+   `~/runs/eval_node.sh` writes the scorecard against Root_g, plus the
+   repertoire probe and active fan-in on its last checkpoint.
+2. **Decide** (`~/runs/decide_node.py child parent`). A node advances if all
+   of these hold:
+   - its share of healthy scorecard windows is at least its parent's;
+   - repertoire: distinct keys ≥ 0.7× the base model's 13, and LB share ≤ 0.6;
+   - active fan-in: no damage pattern (drive < 0.9× base together with
+     overlap > base + 0.01).
+3. **Next generation:**
+   - if Tin3_et_curio advances over Tin3_et, its children run one trait each:
+     learning rate 1e-5; output tether at weight 0.1; KL-Cov with a 10×
+     larger fraction (k = 0.02);
+   - otherwise: curio without the tether.
+   - Each child is evaluated and decided against curio. The sandbox then
+     returns to desktop mode.
+
+The decisions are logged as `DECIDE` lines in `~/runs/arms_queue3.log`; the
+tree and the pieces here are updated from them.
 
 ### How a node is judged
 
