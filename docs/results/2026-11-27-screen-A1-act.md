@@ -92,7 +92,7 @@ minute 38: entropy 0.73 nats against a floor of about 0.35, lambda_act back
 at 0 after firing at minutes 7 and 18; distinct actions per 10 minutes 1,016,
 740, 224, 106 (counting unparsed decisions once, as the placeholder). 1,607
 of its first 4,563 decisions (35 %) are broken completions, from minute 7 on
-(see the correction above; covered in the A1pa/A1io doc). The screen from minute 25 is
+(see the correction above; covered in the [A1pa/A1io doc](2026-11-27-screen-A1pa-A1io.md)). The screen from minute 25 is
 Minecraft's "open this link or copy it to your clipboard?" dialog for
 `https://aka.ms/snapshotbugs?ref=game` (the bug-report button in the Game
 Menu), with "Saved screenshot" lines in chat behind it (F2 presses).
@@ -120,7 +120,7 @@ prints QUEUE_DONE.
 - Answered after: unparsed decisions carried no gradient. The trainer replays
   them as `NOOP_TEXT`, which never matches the sampled tokens, so PPO skipped
   them and the action-entropy dual measured the substituted no-op. Fixed with
-  `--grammar` (f567653), which masks decoding to the action format.
+  `--grammar` (f567653, NaN-gradient fix 7780d8b), which masks decoding to the action format.
 - Thought–action agreement. Only the action tokens are trained, so fluent
   thoughts show the shared weights are not broken in general. They do not
   show that the trained behaviour is healthy. A score of whether the action
