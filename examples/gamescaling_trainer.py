@@ -14,8 +14,10 @@ on another GPU (the P40). Each step:
                                                clipped to 1 +- eps; reward = the
                                                pointwise MI, normalized)
           + lambda * relu(floor - PR) / floor (health; PR of the centre block)
-          [+ lambda_act * relu(floor_act - H) / floor_act with --health pr+act:
-           H = entropy of the action tokens; dose = max(lambda, lambda_act)]
+          [+ lambda_act * relu(floor_act - H) / floor_act
+           + lambda_act_hi * relu(H - ceil_act) / ceil_act with --health pr+act:
+           H = entropy of the action tokens, held between 0.8x and 1/0.8x its
+           early value; dose = max(lambda, lambda_act), the ceiling adds no dose]
           [+ the self-prediction loss for A1+self]
           [+ w_tether * the input tether (--tether head|col): the state after
            acting on frame t predicts frame t+1's mean image-token embedding,
@@ -129,7 +131,8 @@ def main() -> None:
                     help="energy also on the input neurons (token embeddings, vision merger) and the output "
                          "neurons (action-choice probabilities); the actor must run with --energy-io too")
     ap.add_argument("--health", choices=("pr", "pr+act"), default="pr",
-                    help="pr+act: also hold the action entropy above 0.8 x its early value (second dual)")
+                    help="pr+act: also hold the action entropy between 0.8x and 1/0.8x its early value "
+                         "(second dual, two-sided)")
     ap.add_argument("--grammar", action="store_true",
                     help="the actor sampled under the action-format mask: apply the same mask to log pi and "
                          "the entropy")
@@ -181,7 +184,7 @@ def main() -> None:
     sync = WeightSync(sync_tensors(linears, direct), run / "sync")
     dual = Dual(enabled=a.arm != "A1-lam")
     bored = Boredom() if a.arm == "A1+bored" else None
-    dual_act = Dual(enabled=a.health == "pr+act" and a.arm != "A1-lam")
+    dual_act = Dual(enabled=a.health == "pr+act" and a.arm != "A1-lam", two_sided=True)
 
     def dose_now() -> float:
         if a.dose == "none" or a.arm == "A1-lam":
@@ -327,7 +330,7 @@ def main() -> None:
         loss_h = (lam * torch.relu(floor - pr) / floor) if dual.floor else torch.zeros((), device=a.device)
         ent = torch.stack(ents).mean()  # entropy of the action tokens, restricted vocabulary (nats)
         if dual_act.enabled and dual_act.floor:
-            loss_h = loss_h + dual_act.lam * torch.relu(dual_act.floor - ent) / dual_act.floor
+            loss_h = loss_h + dual_act.penalty(ent)
         loss = a.w_rep * loss_rep + a.w_pg * loss_pg + a.w_health * loss_h
         if "self_loss" in res:
             loss = loss + res["self_loss"]
@@ -364,7 +367,7 @@ def main() -> None:
                "reward_mean": round(r_mean, 4), "logp_mean": round(float(lps.mean()), 3),
                "loss_pg": round(float(loss_pg), 4), "ppo_turns": matched, "pr": round(float(pr), 3), "floor": dual.floor,
                "lam": round(lam, 4), "ent": round(float(ent), 4), "floor_act": dual_act.floor,
-               "lam_act": round(dual_act.lam, 4), "dose": round(d, 4), "energy_changed": energy.changed_count() if d > 0 else 0,
+               "lam_act": round(dual_act.lam, 4), "ceil_act": dual_act.ceiling, "lam_act_hi": round(dual_act.lam_hi, 4), "dose": round(d, 4), "energy_changed": energy.changed_count() if d > 0 else 0,
                "grad_norm": round(grad_norm, 3), "tokens": int(ids.numel()), "seconds": round(time.time() - t0, 2), "synced": synced,
                "gpu_gib": round(torch.cuda.max_memory_allocated(a.device) / 2**30, 2)}
         if tres is not None:

@@ -188,3 +188,20 @@ def test_image_means_takes_each_turns_own_image_run():
     emb = torch.arange(len(ids), dtype=torch.float)[:, None].repeat(1, 2)
     m = image_means(ids, emb, IMG, states=[3, 9])
     assert m[:, 0].tolist() == [1.5, 7.0]
+
+
+def test_two_sided_dual_pulls_back_from_above_the_ceiling_and_rests_in_the_band():
+    dual = Dual(frac=0.8, eta=0.1, warmup=3, two_sided=True)
+    for _ in range(3):
+        dual.update(1.0)
+    assert dual.floor == pytest.approx(0.8) and dual.ceiling == pytest.approx(1.25)
+    for _ in range(5):
+        dual.update(2.0)  # ran away upward
+    assert dual.lam == 0.0 and dual.lam_hi > 0
+    h = torch.tensor(2.0, requires_grad=True)
+    dual.penalty(h).backward()
+    assert h.grad > 0  # descending the penalty lowers the entropy
+    for _ in range(200):
+        dual.update(1.0)  # back inside the band: both multipliers decay to 0
+    assert dual.lam == 0.0 and dual.lam_hi == 0.0
+    assert float(dual.penalty(torch.tensor(1.0))) == 0.0

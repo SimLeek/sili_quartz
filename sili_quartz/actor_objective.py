@@ -339,24 +339,45 @@ def participation_ratio(h: Tensor) -> Tensor:
 
 
 class Dual:
-    """lambda <- max(0, lambda + eta * (floor - health) / floor); floor = frac x early health."""
+    """lambda <- max(0, lambda + eta * (floor - health) / floor); floor = frac x early health.
+
+    two_sided: also a ceiling at early health / frac, with its own multiplier
+    lambda_hi <- max(0, lambda_hi + eta * (health - ceiling) / ceiling), so a push
+    up from the floor cannot run away (a thermostat, not a heater)."""
 
     def __init__(self, frac: float = 0.8, eta: float = 0.05, warmup: int = 20, lam_max: float = 1.5,
-                 enabled: bool = True):
+                 enabled: bool = True, two_sided: bool = False):
         self.frac, self.eta, self.warmup, self.lam_max, self.enabled = frac, eta, warmup, lam_max, enabled
+        self.two_sided = two_sided
         self.early: list[float] = []
         self.floor: float | None = None
+        self.ceiling: float | None = None
         self.lam = 0.0
+        self.lam_hi = 0.0
 
     def update(self, health: float) -> float:
         if self.floor is None:
             self.early.append(health)
             if len(self.early) >= self.warmup:
-                self.floor = self.frac * sum(self.early) / len(self.early)
+                mean = sum(self.early) / len(self.early)
+                self.floor = self.frac * mean
+                if self.two_sided:
+                    self.ceiling = mean / self.frac
             return self.lam
         if self.enabled:
             self.lam = min(self.lam_max, max(0.0, self.lam + self.eta * (self.floor - health) / self.floor))
+            if self.ceiling is not None:
+                self.lam_hi = min(self.lam_max, max(0.0, self.lam_hi + self.eta * (health - self.ceiling) / self.ceiling))
         return self.lam
+
+    def penalty(self, health):
+        """The loss term: lambda * relu(floor - h) / floor [+ lambda_hi * relu(h - ceiling) / ceiling]."""
+        if self.floor is None:
+            return health * 0.0
+        out = self.lam * torch.relu(self.floor - health) / self.floor
+        if self.ceiling is not None:
+            out = out + self.lam_hi * torch.relu(health - self.ceiling) / self.ceiling
+        return out
 
 
 class Boredom:

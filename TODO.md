@@ -215,8 +215,8 @@ smallest controller that sets the dose, working before 3 and 4.
   implicit world model (actions with high MI with the game); our objectives
   (MI between internal projections, entropy floor, energy) do not require
   that coherence, so nothing defends it. Variants, as arms:
-  - KL to the untouched policy on the action tokens: the most direct anchor
-    to the cloned world model (needs a reference forward; not built yet).
+  - Not an arm: KL to a frozen copy of the untouched policy. That is the
+    behaviour-cloning target itself, an oracle (user, 2026-11-27).
   - `--tether head`: the centre state after acting on frame t predicts frame
     t+1's mean image-token input (detached) through a linear readout;
     representation loss only, never a reward, so pausing is not paid for.
