@@ -108,25 +108,33 @@ branches from the base model.
 | 2 | smoke test, then Tin3_et | energy in training only (fixed:33, the text runs' dose; actor plays clean), on the Tin3 node | whether training under energy hurts or helps play when the actor itself plays clean |
 | 3 | Tin3_et_curio (commit 0476832) | the energy-curiosity reward on the output side | the first candidate drive for core requirement 2. The smoke run showed the drive building up with frame position (energy starts at rest each window: 0.025 → 0.094), so each position's running mean drive reduction is subtracted |
 
-Then queue 24 runs unattended:
+Then queue 24 runs unattended: the **drive generation**, as siblings.
 
-1. **Evaluate** Root_g, Tin3_c, Tin3_et and Tin3_et_curio. For each node,
-   `~/runs/eval_node.sh` writes the scorecard against Root_g, plus the
-   repertoire probe and active fan-in on its last checkpoint.
-2. **Decide** (`~/runs/decide_node.py child parent`). A node advances if all
-   of these hold:
-   - its share of healthy scorecard windows is at least its parent's, and its
-     median deviation is no worse than the parent's plus 0.05;
-   - repertoire: distinct keys ≥ 0.7× the base model's 13, and LB share ≤ 0.6;
-   - active fan-in: no damage pattern (drive < 0.9× base together with
-     overlap > base + 0.01).
-3. **Next generation:**
-   - if Tin3_et_curio advances over Tin3_et, its children run one trait each:
-     learning rate 1e-5; output tether at weight 0.1; KL-Cov with a 10×
-     larger fraction (k = 0.02);
-   - otherwise: curio without the tether.
-   - Each child is evaluated and decided against curio. The sandbox then
-     returns to desktop mode.
+All siblings share one parent setup (input tether on layers 1–12,
+training-time energy at fixed:33, actor clean) and differ only in the drive.
+
+| sibling | drive | kind |
+|---|---|---|
+| Tin3_et_curio (queue 23) | energy curiosity, layers 1–12 | energy family |
+| curio_input | energy curiosity, input neurons only (pixel-level; roughly episodic novelty) | energy family |
+| curio_all | energy curiosity, all 24 layers (concept-level) | energy family |
+| episodic_int | episodic novelty on layer-12 frame representations: mean distance to the 10 nearest *earlier* frames in a rolling 2,048-frame memory (a poor estimate until the hippocampus, TODO 4) | different estimator (joint) |
+| rnd_int | random network distillation on the same representations | different estimator (generalizing) |
+
+1. **Smoke tests.** Each new drive gets a trainer-only smoke run; one that
+   fails is skipped.
+2. **Evaluate** every sibling (`~/runs/eval_node.sh`).
+3. **Select** (`~/runs/select_sibling.py`). Health is absolute, against the
+   untouched model:
+   - at least half the scorecard windows healthy;
+   - repertoire: distinct keys ≥ 0.7× 13, LB share ≤ 0.6;
+   - no active fan-in damage.
+   - Among the healthy, the highest **input coherence** wins (key-set
+     similarity within a state minus across states, from the repertoire
+     probe); ties go to the smaller median deviation.
+4. **The winner's children**, one trait each: learning rate 1e-5; output
+   tether at 0.1; KL-Cov at k = 0.02. Each is decided against the winner.
+5. **Desktop mode.**
 
 The decisions are logged as `DECIDE` lines in `~/runs/arms_queue3.log`; the
 tree and the pieces here are updated from them.
