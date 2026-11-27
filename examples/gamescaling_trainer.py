@@ -35,6 +35,10 @@ on another GPU (the P40). Each step:
            capacity (sili_quartz/empowerment.py). It rewards the action that
            led to that state. A poor world model has a large error and so
            claims little control]
+          [--reward episodic: novelty of the next frame's layer --novelty-layer
+           representation against a rolling memory of earlier frames (k nearest
+           neighbours); --reward rnd: random network distillation on the same
+           representation (+ the predictor's own loss)]
           [+ w_tether * the input tether (--tether head|col): the state after
            acting on frame t predicts frame t+1's mean image-token embedding,
            detached; head = a linear readout, col = each column of
@@ -67,7 +71,7 @@ import torch
 from PIL import Image
 
 from sili_quartz.actor_objective import (
-    Boredom, ChunkTether, CovControl, Dual, InputTether, OutputTether, energy_drive, PredictiveInfo, choice_columns, image_means, image_runs, input_share, make_energy, measure_io_means, measure_site_means,
+    Boredom, ChunkTether, CovControl, Dual, EpisodicNovelty, RNDNovelty, InputTether, OutputTether, energy_drive, PredictiveInfo, choice_columns, image_means, image_runs, input_share, make_energy, measure_io_means, measure_site_means,
     output_energy, participation_ratio, turn_positions,
 )
 from sili_quartz.continual import (
@@ -181,10 +185,16 @@ def main() -> None:
     ap.add_argument("--renorm", action="store_true",
                     help="amortized magnitude health: after each merge, rescale rows of 1/8 of the Linears "
                          "back into [0.8, 1.25] x their starting norms")
-    ap.add_argument("--reward", choices=("mi", "empower", "energy"), default="mi",
+    ap.add_argument("--reward", choices=("mi", "empower", "energy", "episodic", "rnd"), default="mi",
                     help="PPO reward: the pointwise MI of the arm; state empowerment (needs --tether chunks); "
                          "or energy curiosity: the drive reduction D(frame k) - D(frame k+1), D = share of the "
                          "input-side neurons energy forced or shut off on the frame (needs a fixed dose > 0)")
+    ap.add_argument("--reward-sites", choices=("layers", "input"), default="layers",
+                    help="--reward energy: read the drive from the first --reward-layers layers, or from the input "
+                         "neurons only (token embeddings, vision merger; needs --energy-io)")
+    ap.add_argument("--novelty-layer", type=int, default=12,
+                    help="--reward episodic|rnd: the frame representation is this layer's state averaged over the "
+                         "frame's image tokens (detached)")
     ap.add_argument("--reward-layers", type=int, default=12,
                     help="--reward energy: the first N layers' MLP and attention sites are the input side")
     ap.add_argument("--probes", type=int, default=4, help="probe actions per empowerment estimate")
@@ -241,11 +251,14 @@ def main() -> None:
     tether_out = OutputTether(n_layers, chunk=a.tether_chunk) if a.tether_out else None
     cov_ctl = CovControl(a.cov, k=a.cov_k, seed=a.seed) if a.cov != "none" else None
     drive_base: dict[int, tuple[int, float]] = {}  # frame position -> (count, sum of drive reductions)
+    episodic = EpisodicNovelty() if a.reward == "episodic" else None
+    rnd = RNDNovelty(d=model.config.text_config.hidden_size, seed=a.seed).to(a.device) if a.reward == "rnd" else None
     image_token = model.config.image_token_id
     opt = torch.optim.AdamW([
         {"params": list(lora.parameters()), "lr": a.lr},
         {"params": list(direct.values()), "lr": a.lr_direct, "weight_decay": 0.0},
-        {"params": list(pi.parameters()) + (list(tether.parameters()) if tether else []), "lr": 1e-3},
+        {"params": list(pi.parameters()) + (list(tether.parameters()) if tether else [])
+         + (list(rnd.predictor.parameters()) if rnd is not None else []), "lr": 1e-3},
     ])
     sync = WeightSync(sync_tensors(linears, direct), run / "sync")
     dual = Dual(enabled=a.arm != "A1-lam")
@@ -296,9 +309,13 @@ def main() -> None:
     cols_t = torch.tensor(cols, device=a.device)
     energy = make_energy(model, mlp_means, attn_means, io_means=io_means if a.energy_io else None,
                          n_choice=len(cols), col=a.energy_col)
-    if a.reward == "energy":  # sites: MLP outputs per layer, then attention outputs per layer
+    if a.reward == "energy":  # sites: MLP outputs per layer, then attention outputs per layer, then the input sites
         nl = len(mlp_means)
-        energy.trace_sites = set(range(a.reward_layers)) | {nl + j for j in range(a.reward_layers)}
+        if a.reward_sites == "input":
+            assert a.energy_io, "--reward-sites input needs --energy-io (energy on the input neurons)"
+            energy.trace_sites = {2 * nl, 2 * nl + 1}
+        else:
+            energy.trace_sites = set(range(a.reward_layers)) | {nl + j for j in range(a.reward_layers)}
     adv_mean, adv_var, step, t_start = 0.0, 1.0, 0, time.time()
     last_ckpt = t_start
     last_probe = 0.0
@@ -415,6 +432,7 @@ def main() -> None:
         # rewards by turn index: the arm's pointwise MI for every turn but the last, or the
         # empowerment of the window's last state for the action that led to it
         drives = None
+        loss_nov = None
         if a.reward == "energy" and energy.trace:
             drives = energy_drive(energy.trace, image_runs(ids.tolist(), image_token, [t["state"] for t in turns]))
             energy.trace = {}
@@ -430,6 +448,17 @@ def main() -> None:
                     n_k, s_k = drive_base.get(k, (0, 0.0))
                     rewards[k] = diff - (s_k / n_k if n_k else diff)
                     drive_base[k] = (n_k + 1, s_k + diff)
+        elif a.reward in ("episodic", "rnd"):
+            rewards = {}
+            if len(turns) == len(win):
+                runs_ = image_runs(ids.tolist(), image_token, [t["state"] for t in turns])
+                reps = torch.stack([hs[a.novelty_layer][0, s0:s1].mean(0) for s0, s1 in runs_]).detach().float()
+                if episodic is not None:
+                    nov = episodic(reps, [r["n"] for r in win])
+                else:
+                    nov, loss_nov = rnd(reps)
+                if not warm:
+                    rewards = {k: nov[k + 1] for k in range(len(turns) - 1)}
         else:
             rewards = {len(turns) - 2: emp} if emp is not None and not warm else {}
         r_mean = sum(rewards.values()) / len(rewards) if rewards else 0.0
@@ -483,6 +512,8 @@ def main() -> None:
             loss = loss + res["self_loss"]
         if tres is not None and not warm:
             loss = loss + a.w_tether * tres["tether_loss"]
+        if loss_nov is not None and not warm:
+            loss = loss + loss_nov  # trains the RND predictor only (its input is detached)
         if ores is not None and not warm:
             loss = loss + (a.w_tether if a.w_tether_out is None else a.w_tether_out) * ores["tether_out_loss"]
         opt.zero_grad(set_to_none=True)

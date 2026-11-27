@@ -474,6 +474,89 @@ class CovControl:
         return torch.where(drop, pg.detach(), pg)
 
 
+class EpisodicNovelty:
+    """Episodic novelty on internal features (a poor-estimate memory standing
+    in for the hippocampus, TODO 4). A frame's novelty is the mean distance of
+    its representation to its k nearest neighbours among *earlier* frames in a
+    rolling memory, divided by the running mean of that distance (k = 10 as
+    in Never Give Up, Badia et al. 2020). The memory is keyed by decision
+    number: replayed windows overlap, so each frame is stored once, and only
+    frames from earlier decisions count as neighbours. Joint: it compares
+    whole representations, which per-neuron energy cannot
+    (bend_proofs/energy_vs_episodic_novelty)."""
+
+    def __init__(self, k: int = 10, memory: int = 2048):
+        self.k, self.memory = k, memory
+        self.bank: Tensor | None = None
+        self.ids: Tensor | None = None
+        self.n, self.mean = 0, 0.0
+
+    def __call__(self, frames: Tensor, ids: list[int]) -> list[float]:
+        """frames: (T, d) detached representations; ids: their decision numbers."""
+        x = torch.nn.functional.normalize(frames.detach().float(), dim=1).cpu()
+        out = []
+        for row, i in zip(x, ids):
+            earlier = None if self.bank is None else self.bank[self.ids < i]
+            if earlier is not None and earlier.shape[0] >= self.k:
+                d = (1 - earlier @ row).clamp(min=0)  # cosine distance
+                knn = float(d.topk(self.k, largest=False).values.mean())
+                self.n += 1
+                self.mean += (knn - self.mean) / self.n
+                out.append(knn / self.mean if self.mean > 0 else 0.0)
+            else:
+                out.append(0.0)
+            if self.ids is None or not bool((self.ids == i).any()):
+                self.bank = row[None] if self.bank is None else torch.cat([self.bank, row[None]])
+                self.ids = torch.tensor([i]) if self.ids is None else torch.cat([self.ids, torch.tensor([i])])
+                if self.bank.shape[0] > self.memory:
+                    keep = self.ids.argsort()[-self.memory:]  # keep the newest decisions
+                    self.bank, self.ids = self.bank[keep], self.ids[keep]
+        return out
+
+
+class RNDNovelty(nn.Module):
+    """Random network distillation (Burda et al. 2018) on internal features.
+    A fixed random network and a trained predictor (both d -> hidden -> out)
+    read the frame representation, standardized by running statistics; the
+    predictor's error on a frame is its novelty, divided by the running
+    standard deviation of the errors. `loss` trains the predictor."""
+
+    def __init__(self, d: int = 1024, hidden: int = 256, out: int = 64, seed: int = 0):
+        super().__init__()
+        g = torch.Generator().manual_seed(seed + 77)
+
+        def mlp():
+            return nn.Sequential(nn.Linear(d, hidden), nn.ReLU(), nn.Linear(hidden, out))
+        self.target, self.predictor = mlp(), mlp()
+        with torch.no_grad():
+            for p in self.target.parameters():
+                p.copy_(torch.randn(p.shape, generator=g) / max(1, p.shape[-1]) ** 0.5)
+        self.target.requires_grad_(False)
+        self.n = 0
+        self.register_buffer("mu", torch.zeros(d))
+        self.register_buffer("m2", torch.ones(d))
+        self.err_n, self.err_mean, self.err_m2 = 0, 0.0, 0.0
+
+    def forward(self, frames: Tensor) -> tuple[list[float], Tensor]:
+        x = frames.detach().float()
+        for row in x:  # running mean/variance of the inputs (Welford)
+            self.n += 1
+            delta = row - self.mu
+            self.mu += delta / self.n
+            self.m2 += delta * (row - self.mu)
+        z = ((x - self.mu) / (self.m2 / max(1, self.n)).sqrt().clamp(min=1e-6)).clamp(-5, 5)
+        err = (self.predictor(z) - self.target(z)).pow(2).mean(1)
+        out = []
+        for e in err.detach().tolist():
+            self.err_n += 1
+            delta = e - self.err_mean
+            self.err_mean += delta / self.err_n
+            self.err_m2 += delta * (e - self.err_mean)
+            sd = (self.err_m2 / self.err_n) ** 0.5 if self.err_n > 1 else 1.0
+            out.append(e / sd if sd > 0 else 0.0)
+        return out, err.mean()
+
+
 def input_share(hs, chunk: int) -> Tensor:
     """Per chunk: how much of the chunk's output still points along its input,
     cos^2(mean of the chunk's layer outputs, chunk input), averaged over tokens.

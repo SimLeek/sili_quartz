@@ -9,7 +9,11 @@ temperature 1, the CUDA-graph decoder). Energy is off, so this measures the
 weights' own repertoire, not energy's noise. Per model:
 - distinct keys used (of the 74), key entropy (bits), LB share;
 - distinct actions / actions, median mouse move;
-- mean log-prob per sampled token (higher = more certain).
+- mean log-prob per sampled token (higher = more certain);
+- input coherence: mean key-set Jaccard similarity between the K actions of
+  the *same* state minus that between actions of *different* states. High =
+  the keys depend consistently on the screen; ~0 = noise, or one action
+  everywhere.
 """
 
 from __future__ import annotations
@@ -86,20 +90,28 @@ def main() -> None:
         pol.grammar = ActionGrammar(pol.tok, pol.vocab, pol.max_new_tokens)
         pol.generator = torch.Generator(device=a.device).manual_seed(a.seed)
         keys, actions, mice, lps = collections.Counter(), [], [], []
+        per_state: list[list[frozenset]] = []
         for run, rows, i in states:
             hist = [(frame(run, r), assistant_content(r)) for r in rows[i - 5:i]]
             cur = frame(run, rows[i])
+            per_state.append([])
             for _ in range(a.k):
                 pol.reset()
                 pol.turns = list(hist)
                 action, completion = pol.act(cur)
                 m, ks = parse(action.text)
                 keys.update(ks)
+                per_state[-1].append(frozenset(ks))
                 actions.append(action.text)
                 if m is not None:
                     mice.append(m)
                 if pol.sampled_logp:
                     lps.append(sum(pol.sampled_logp) / len(pol.sampled_logp))
+        def jac(x, y):
+            return 1.0 if not x and not y else len(x & y) / len(x | y)
+        within = [jac(x, y) for st in per_state for i, x in enumerate(st) for y in st[i + 1:]]
+        across = [jac(x, y) for si, st in enumerate(per_state) for st2 in per_state[si + 1:] for x in st for y in st2]
+        coherence = (sum(within) / len(within) - sum(across) / len(across)) if within and across else 0.0
         n = sum(keys.values())
         ent = -sum(v / n * math.log2(v / n) for v in keys.values()) if n else 0.0
         mice.sort()
@@ -108,6 +120,7 @@ def main() -> None:
                "lb_share": round(sum("LB" in parse(t)[1] for t in actions) / len(actions), 3),
                "mouse_median": mice[len(mice) // 2] if mice else None,
                "token_logp": round(sum(lps) / len(lps), 3) if lps else None,
+               "coherence": round(coherence, 4),
                "top_keys": keys.most_common(6),
                "top_actions": collections.Counter(actions).most_common(2)}
         print(json.dumps(row), flush=True)

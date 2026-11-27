@@ -443,3 +443,37 @@ def test_column_averaged_energy_spreads_one_neurons_change_over_its_column():
     off.set_dose(cost_scale=1.0, noise_scale=0.0)
     y = torch.randn(1, 3, 8) * 0.01 + 1.0
     assert torch.allclose(off.apply(0, y), y)  # no intervention, no change
+
+
+def test_episodic_novelty_is_low_for_a_repeated_frame_high_for_a_new_one_and_causal():
+    from sili_quartz.actor_objective import EpisodicNovelty
+
+    g = torch.Generator().manual_seed(0)
+    nov = EpisodicNovelty(k=3, memory=100)
+    nov(torch.randn(20, 16, generator=g), list(range(20)))  # decisions 0..19
+    same = torch.randn(1, 16, generator=g)
+    nov(same.repeat(5, 1), list(range(20, 25)))  # one frame seen at decisions 20..24
+    repeat = nov(same, [30])[0]
+    new = nov(torch.randn(1, 16, generator=g) * 10, [31])[0]
+    assert repeat < 0.1 < new
+    assert nov(same, [10])[0] > repeat  # at decision 10 those copies were still in the future
+    n_before = nov.bank.shape[0]
+    nov(same, [30])  # a replayed decision is not stored twice
+    assert nov.bank.shape[0] == n_before
+
+
+def test_rnd_novelty_falls_for_a_frame_the_predictor_has_trained_on():
+    from sili_quartz.actor_objective import RNDNovelty
+
+    torch.manual_seed(0)
+    rnd = RNDNovelty(d=16, hidden=32, out=8)
+    opt = torch.optim.Adam(rnd.predictor.parameters(), lr=1e-2)
+    seen = torch.randn(4, 16)
+    for _ in range(5):
+        rnd(torch.randn(8, 16))  # warm the running statistics
+    _, before = rnd(seen)
+    for _ in range(200):
+        _, loss = rnd(seen)
+        opt.zero_grad(); loss.backward(); opt.step()
+    _, after = rnd(seen)
+    assert float(after) < 0.2 * float(before)
