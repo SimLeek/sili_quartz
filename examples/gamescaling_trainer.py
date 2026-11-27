@@ -144,6 +144,9 @@ def main() -> None:
     ap.add_argument("--w-rep", type=float, default=1.0)
     ap.add_argument("--w-pg", type=float, default=1.0)
     ap.add_argument("--w-health", type=float, default=1.0)
+    ap.add_argument("--actor-dose", type=float, default=None,
+                    help="dose written for the actor (default: the trainer's own). 0 = energy only in training: "
+                         "the weights train under energy and the actor plays clean, as energy was designed")
     ap.add_argument("--energy-col", type=int, default=0,
                     help="column-averaged energy: average energy's change to each neuron's output over columns "
                          "of N contiguous neurons (actor and trainer must match; 0 = per neuron)")
@@ -500,7 +503,8 @@ def main() -> None:
                 changed = sorted(set(changed) | set(moved))
             path = sync.write(changed + list(direct), meta={"step": step})
             synced = path.name if path else None
-            write_atomic(run / "dose.json", json.dumps({"dose": dose_now(), "step": step}))
+            actor_dose = dose_now() if a.actor_dose is None else a.actor_dose
+            write_atomic(run / "dose.json", json.dumps({"dose": actor_dose, "step": step}))
         if time.time() - last_ckpt > a.checkpoint_every:
             last_ckpt = time.time()
             ck = run / "checkpoints"
@@ -513,6 +517,7 @@ def main() -> None:
                "lam": round(lam, 4), "ent": round(float(ent), 4), "floor_act": dual_act.floor,
                "energy_snapshot": None if snap is None else int(snap.stem.split("_")[1]),
                "lam_act": round(dual_act.lam, 4), "ceil_act": dual_act.ceiling, "lam_act_hi": round(dual_act.lam_hi, 4), "dose": round(d, 4), "energy_changed": energy.changed_count() if d > 0 else 0,
+               "energy_intervened": energy.intervened_count() if d > 0 else 0,
                "grad_norm": round(grad_norm, 3), "tokens": int(ids.numel()), "seconds": round(time.time() - t0, 2), "synced": synced,
                "gpu_gib": round(torch.cuda.max_memory_allocated(a.device) / 2**30, 2)}
         if tres is not None:
