@@ -32,6 +32,10 @@ def main() -> None:
     ap.add_argument("--model", default=os.path.expanduser("~/models/GameScaling-0.8B-work"))
     ap.add_argument("--layers", default="20-23", help="inclusive index range of language-model layers")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--scale", type=float, default=1.0,
+                    help="multiply the re-initialized Linear weights by this (e.g. 1e-6: a near-zero start, connections "
+                         "not grown yet; the blocks then pass the residual stream through and their gradients are "
+                         "second-order small, the deadlock energy's forced firing was built to break)")
     ap.add_argument("--out", type=Path, required=True)
     a = ap.parse_args()
 
@@ -45,14 +49,17 @@ def main() -> None:
     for i in range(lo, hi + 1):
         for m in layers[i].modules():
             model._init_weights(m)
+            if a.scale != 1.0 and isinstance(m, torch.nn.Linear):
+                with torch.no_grad():
+                    m.weight.mul_(a.scale)
         prefix = f"model.language_model.layers.{i}."
         for n, p in layers[i].named_parameters():
             names[prefix + n] = p
     params = dict(model.named_parameters())
     missing = [n for n in names if n not in params]
     assert not missing, missing[:3]
-    torch.save({n: p.detach().half() for n, p in names.items()}, a.out)
-    print(json.dumps({"layers": [lo, hi], "tensors": len(names), "out": str(a.out)}))
+    torch.save({n: p.detach().float() for n, p in names.items()}, a.out)  # float32: a 1e-6 scale underflows fp16
+    print(json.dumps({"layers": [lo, hi], "scale": a.scale, "tensors": len(names), "out": str(a.out)}))
 
 
 if __name__ == "__main__":
