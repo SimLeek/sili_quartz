@@ -226,6 +226,29 @@ tree and the pieces here are updated from them.
 
 Scripts: `tools/lineage/` (copies of the sandbox orchestration).
 
+### Intention persistence: the current setup is ablated (user, 2026-11-28)
+
+Each decision is ~0.37 s and carries almost no intention to the next (the
+history is 5 past frames and actions, thoughts are prefilled empty). Breaking a
+block needs the same block held: by hand leaves ~0.35 s, dirt ~0.75 s, a log
+~3 s (~8 decisions). Measured, LB held with steady aim (mouse move <= 4):
+
+| run | steady LB runs | median | p90 | runs >= 8 decisions per hour |
+|---|---|---|---|---|
+| Root_g (untouched) | 502 | 1 | 3 | 20 |
+| Tin3_et_curio | 1184 | 1 | 6 | 42.5 |
+
+That matches what it mines (dirt, leaves; no logs in any run). The drive
+results stay valid data, but on an agent missing an intention carrier, which
+needs replacing soon. Scorecard metric: `lb_steady_*` (`holds()`).
+Candidates, cheapest first:
+1. **Short thoughts kept in history** (5–8+ tokens, length knob): the model
+   already supports `<think>`; RL-trained, and kept in the past turns so they
+   carry to the next decision.
+2. **A small recurrent register** (RMT-style memory tokens carried between
+   decisions, or Titans memory-as-weights): the agent-memory bet; no large
+   context needed.
+
 ### Random-init checks (queue 25, after the drive generation)
 
 The base model is behaviour-cloned and near optimal, so a method can look good

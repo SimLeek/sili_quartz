@@ -175,6 +175,33 @@ def pauses(run: Path) -> dict:
     return out
 
 
+def holds(run: Path) -> dict:
+    """Intention persistence: runs of consecutive decisions holding LB with steady aim (mouse move <= 4). Breaking a
+    block needs the same block held: by hand leaves ~0.35 s, dirt ~0.75 s, a log ~3 s (~8 decisions at ~0.37 s)."""
+    runs, cur = [], 0
+    try:
+        rows = [json.loads(l) for l in open(run / "actor.jsonl")]
+    except OSError:
+        return {}
+    for r in rows:
+        parts = re.sub(r"<\|action_(start|end)\|>", "", r.get("text", "")).split(";")
+        try:
+            n0 = parts[0].split()
+            m = abs(float(n0[0])) + abs(float(n0[1]))
+        except (ValueError, IndexError):
+            m = 99.0
+        if "LB" in " ".join(parts[1:]).split() and m <= 4:
+            cur += 1
+        elif cur:
+            runs.append(cur)
+            cur = 0
+    if not runs:
+        return {}
+    runs.sort()
+    return {"lb_steady_runs": len(runs), "lb_steady_p90": runs[int(0.9 * len(runs))],
+            "lb_steady_ge8_per_h": round(sum(x >= 8 for x in runs) / max((rows[-1]["t"] - rows[0]["t"]) / 3600, 1e-6), 1)}
+
+
 def trend(ws: list[dict]) -> dict:
     """Within-run trend of the play metrics: mean of the last third of the windows minus the first third."""
     if len(ws) < 3:
@@ -220,7 +247,7 @@ def main() -> None:
         row = {"run": run.name, "windows": len(ws), "healthy_windows": healthy,
                "median_deviation": devs[len(devs) // 2] if devs else None,
                "first_flag_minute": next((w["minute"] for w in ws if w["flags"]), None),
-               "game": {**game(run), **pauses(run)}, "trend": trend(ws), "per_window": ws}
+               "game": {**game(run), **pauses(run), **holds(run)}, "trend": trend(ws), "per_window": ws}
         print(f"{run.name:24s} healthy {healthy}/{len(ws)} windows, median deviation {row['median_deviation']}, "
               f"first flag at minute {row['first_flag_minute']}, "
               f"game {row['game']}")
