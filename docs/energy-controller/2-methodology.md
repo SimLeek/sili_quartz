@@ -1,0 +1,460 @@
+# 2. Methodology (draft, 2026-11-23)
+
+Built from [part 1](1-introduction.md), mainly 1.11. Everything here is fixed
+before any controller result exists. A change after results must say so and
+why.
+
+## 2.1 Rules for every experiment
+
+- **No oracles.**
+  - Track P may use its training targets.
+  - Track A may use only its own screen, its keyboard/mouse stream and its
+    internal state.
+  - Game-side data (Minecraft statistics, a position-logging mod) is for
+    **evaluation only** and is never fed to the agent.
+- **Measured two ways.** Every arm reports its gain *and* its cost: wall time,
+  GPU memory, and any extra forward passes.
+- **Seeds.** Each seed is the same program run again. Track P uses at least 4
+  seeds per arm for any claimed comparison. Track A uses the staged protocol
+  in 2.4 (screen, repeat, repeat, then 3 seeds), because there is one P40. A
+  lead needs an agreeing sign across seeds and a better worst seed.
+- **Raw results first.** Each run's tables go to `docs/results/` with no
+  verdict. Part 3 collects them, and part 4 draws conclusions.
+- **Runs.** Sandbox only, under gpu_guard (80 °C abort), launched detached,
+  with a watcher.
+
+## 2.2 Shared parts (build once)
+
+| Part | Choice | Status |
+|---|---|---|
+| Energy | `sili_quartz/energy.py`, `energy_hooks.py` (MLP and attention sites, decay = drive/40) | built |
+| Effect meter | KL(p_energy ‖ p_clean) on next-step outputs, from a clean pass on a sampled subset of steps | to build |
+| Surprise meter | running −log p of the model's own output | to build |
+| Learning-progress meter | drop in loss over a short and a long window | to build |
+| MI estimator | gaussian_bc (primary); InfoNCE (nonlinear arm, d ≤ 64); gaussian on the residuals of a nonlinear forward model (next arm) | benched ([results](../results/2026-11-23-mi-estimator-bench.md)) |
+| Health stats | per-layer participation ratio, kept fraction vs PR, branching ratio, dormant fraction, energy shutoff fraction, optimizer second-moment mean and std, weight std | partly built (sili trackers) |
+| Health floor | PR ≥ 0.8 × early PR; kept ≥ PR; branching ratio in [0.97, 0.99]; second moment and weight std within the measured shape (ratio to own early values) | from MQAR research, 1.11 |
+| Dual update | λ ← max(0, λ + η·(floor − health)) | to build |
+| Dose granularity | per region where the model allows it; number of controlled units set by the GPU memory left | to build |
+
+## 2.3 Track P: prediction (accuracy is the extrinsic signal)
+
+**Model:** GameScaling-0.8B's language-model head on text, as in 2c.
+- This is a predictor we can measure directly: next-token loss and test
+  perplexity on real text (20.7 at the start of 2c).
+- It is a *text* predictor, not a frame predictor. In Minecraft (track A)
+  GameScaling outputs actions only, with no frame-prediction output.
+
+**Environment: text, WikiText-2** (raw, the same files as 2c, in
+`~/collapse/data` on the sandbox). Track A's environment is Minecraft.
+- *P-1:* looped and real prompts from the WikiText-2 test split.
+- *P-2:* prompts and the real control's data are fresh 64-token blocks of the
+  train split each generation. Test perplexity uses 128 fixed blocks of the
+  test split.
+
+**Experiment P-1, the loop test** (`loop_vs_temperature`-style; one run per
+arm; fast).
+- **Arms:** P0a no energy; P0b Mirostat; P0c fixed dose; P1; P1a; P1b; and
+  ×R/D on P1.
+- **Measures:**
+  - loops broken (distinct-3 on 3 looped prompts);
+  - on real text, distinct-3 and the original model's perplexity of what was
+    written, against the true continuation;
+  - the effect KL;
+  - time per token.
+
+**Experiment P-2, the collapse loop** (`examples/model_collapse.py`, 10
+generations, 4 seeds, greedy teacher).
+- **Arms:** P0c (rerun as the matched baseline); P1; P2; P2a; P2+A.
+- **Measures:**
+  - test perplexity per generation;
+  - free-running distinct-3 and looping per generation, *and* during each
+    generation's training run, to test the claim that the comfortable phase
+    should end within one training run;
+  - the training loss floor;
+  - the dose trajectory;
+  - health stats.
+- **Pre-registered reading:**
+  - *Better than the fixed dose* means test perplexity at g10 no worse than
+    P0c (mean 78.5, worst 85.6), **and** free distinct-3 at g10 above P0c's
+    0.086 in at least 3 of 4 seeds.
+  - *The phase ends within a run* means free distinct-3 rising during a
+    generation's training run while test perplexity holds.
+
+## 2.4 Track A: actor (no extrinsic signal at all)
+
+**Environment:** Minecraft on the sandbox, played through robonet on
+localhost. The AI sees only the screen, through a viewport it zooms and pans
+itself, hears the game's audio, and acts only through keys and the mouse.
+- **Installed (user, 2026-11-25):** Minecraft **1.20.1 with Forge**, launched
+  from Prism Launcher (one instance, `1.20.1`). The no-quit mod (`no_way_out`)
+  needs Forge, not Fabric.
+  - *Mods:* no_way_out (no quit button; leave only with `/nwo_out` in chat, or
+    from outside), plus mods the user chose because the game is close to
+    unplayable without a wiki: JEI (recipes), Jade (names what the crosshair
+    points at), Patchouli (in-game books), Xaero's minimap and world map,
+    AppleSkin, Enchantment Descriptions, Mouse Tweaks, Quick Stack, No
+    Durability (tools never break), CC: Tweaked (in-game computers), Enhanced
+    Drones, LogicSense, realistic/water/block physics mods, Oculus (shaders),
+    and performance mods (Embeddium, ModernFix, FerriteCore, Radium,
+    ImmediatelyFast, Entity Culling).
+  - Jade's popup and the minimap are *on screen*, so they are allowed: the
+    agent still gets nothing but pixels and sound.
+  - *World:* "World 1", seed 7486845543670573801, survival, Normal, cheats
+    off, world spawn (16, 69, 0).
+  - MineStudio 1.1.6 (Minecraft 1.16.5) is GameScaling's own published
+    evaluation route. It is not used here, but remains the reference for
+    the model's published numbers.
+- **Session control, `tools/minecraft.py` (runs on the sandbox):**
+  - `status` (game running, window title, player in the world), `stop`
+    (SIGTERM then SIGKILL; the mod does not guard against that).
+  - `reset` puts the world back to its seed: a template of `level.dat` with
+    the player removed and the clock at 0, plus datapacks and server config.
+    Minecraft regenerates terrain from the seed and spawns a new player.
+  - `launch` sets fullscreen, no pause on focus loss and `rawMouseInput:false`
+    in `options.txt` (raw input reads device motion and ignores the synthetic
+    pointer moves robonet sends; with it off, the game reads each move as an
+    offset from the center and re-centers, so robonet's absolute mouse
+    turns the camera — checked: the camera tilted from the ground to the
+    horizon), then
+    `prismlauncher --launch 1.20.1 --world "World 1"`, and waits for "joined
+    the game" in the log (52.6 s in the first test).
+  - `session` = stop, reset, restore settings, launch: the start of every
+    2 h run. The agent can open option and mod screens (it did: JEI,
+    Xaero's maps), so game options, `config/`, `defaultconfigs/` and
+    `xaero/` are restored from a template (`save-settings`, once) at every
+    reset; per-world data (bookmarks, map caches, waypoints) is dropped.
+- **robonet on localhost (robot_network PR #5):** endpoint on the game's
+  display, headless brain, and the AI as a separate process on the shared
+  memory bridge. Frames are 640×480 (the brain's `ai_res`), 30 fps; audio is
+  48 kHz stereo float32 chunks.
+  - `--monitor-dir` writes `frame.png` and `status.json` for watching a run
+    over ssh at a low rate (a few seconds per frame is enough for checks).
+- **Containment:**
+  - The endpoint refuses key presses that complete a blocked combo
+    (`blocked_key_combos` in `~/.robotar/settings.json`): Esc, F3 (debug
+    screen with coordinates and block data), F11, Alt+F4, Alt+Tab, Super,
+    Ctrl+Alt+Delete/Backspace, Ctrl+Alt+F1–F7 (switching virtual consoles).
+    Robonet has no Alt key at all, so the Alt entries guard only against a
+    future change.
+  - The no-quit mod removes the quit button.
+  - **Kill switch, for both of us:** `python -m robonet.killswitch` runs in the
+    game's X session. Ctrl+Alt+Shift+F12 on the physical keyboard stops every
+    robot_network python process and releases all keys and buttons. The
+    endpoint always refuses that combo. Over ssh: `python -m
+    robonet.killswitch --now`.
+  - A watchdog (A.5, `tools/minecraft.py watch`) relaunches the game into
+    the world if it exits, and every 0.5 s closes windows the game opened
+    (mods' "open folder"/"open link" buttons start a file manager or
+    browser; the agent also reached Prism's "Kill Minecraft?" dialog once
+    the game lost focus) and puts the game back in front.
+- **Reaction time and a fast "cerebellum" (user, 2026-11-26):** GameScaling
+  decides every ~0.28 s here (0.2 s is the design and roughly human reaction
+  time), and each decision covers 6 action steps at 30 Hz. A small (~100M)
+  supermimic model running alongside it would not lower reaction time, but
+  would act as a cerebellum: it handles small expected changes on its own
+  (e.g. re-positioning a hand to catch a ball), while anything unexpected
+  still needs the large model. Not built yet; noted as the way to make the
+  ~0.2 s decisions feel continuous.
+- **Audio:** GameScaling takes images, not sound. Options: drop the audio for
+  the GameScaling arms, or render it as a spectrogram image beside the frame.
+  Decided at A.7.
+- **Evaluation only:** Minecraft's per-player statistics file (distance,
+  blocks mined, items), plus chunks visited if a mod is needed. None of it
+  reaches the agent.
+- **Screen complexity (evaluation only, user 2026-11-26):** block stats miss
+  what the agent looks at -- it reads JEI item pages (visually rich) and opens
+  the same menu often (very regular). A 1 fps, 320x180 recording of the screen
+  is scored per minute by `tools/screen_complexity.py`:
+  - *spatial*: mean compressed size of a frame;
+  - *novelty*: extra bytes a minute's frames add when compressed after the
+    previous 10 minutes (lzma, long range), so revisiting a screen adds
+    almost nothing;
+  - *static*: share of frames nearly identical to the one before.
+- **Session length:** 2 hours (user).
+- **Stuck or collapsed: the compression check (user).**
+  - Every 1–10 minutes, compress the agent's own action stream (the action
+    text, or the quantized actions, with zlib or a compressed npz). Record the
+    compression ratio.
+  - *Very compressible* means the agent is repeating itself: stuck, looped or
+    collapsed.
+  - *Barely compressible* means it is close to random noise.
+  - Both ends trigger a check of the model. It is the same two-sided shape as
+    boredom and confusion.
+  - Run the same check on the screen frames, to catch the agent being
+    physically stuck while its actions still vary.
+  - *Proof of a permanent loop* is possible only in a narrow case: a
+    deterministic agent and a deterministic game that revisit an exact
+    (observation, internal state) pair will loop forever. With noise or
+    energy it cannot be proven, so the window rule plus "no new statistics
+    for the window" is the practical test.
+  - It is a monitor and a check trigger, not a controller input. Using it as
+    an input would be allowed (it is the agent's own data), but it would be a
+    separate arm.
+
+**Architecture: two, in this order (user).**
+1. **GameScaling as it is,** kept as one whole model (model card,
+   GameScaling-0.8B-S3).
+   - It has no separate predictor *output*. But it is partly recurrent (3
+     linear-attention layers to every full-attention layer), so it predicts
+     internally: an internal world model, much closer to a brain (user).
+   - Actor training on the whole model trains that internal predictor too.
+   - *Base:* Qwen3.5-0.8B with a 12-layer vision encoder (patch 16).
+   - *Training:* continued pre-training on 1,600 h of keyboard-and-mouse play,
+     27% of it Minecraft.
+   - *Each call:* the current frame plus a short history of frames and
+     actions goes in, and the next **200 ms** of actions comes out as text
+     between `<|action_start|>` and `<|action_end|>`. That is 6 key steps of
+     33 ms, plus one mouse move and scroll for the chunk. The model may think
+     before acting.
+   - *Energy:* goes on its own layers. The objective's dual sets the dose.
+2. **Dreamer/Plan2Explore style:** a world model, with an actor trained inside
+   it on the reward-free objective. Plan2Explore is the reward-free
+   exploration variant.
+
+**Where MI is measured: two arms (user).**
+- *Central:* the output of transformer block `n_layers // 2`. For
+  GameScaling's 24 layers that is `model.layers[12]`, a linear-attention
+  block. It is projected to d ≤ 64.
+- *Output:* GameScaling's action-chunk stream, its only output in track A.
+  It has no frame-prediction output to use.
+
+**Experiment A-0, setup checks** (no training).
+- GameScaling's vision path loads and runs on the P40, in the full
+  `Qwen3_5ForConditionalGeneration`, not the text-only model used in 2c.
+- robonet frames reach it on localhost, and its action text is parsed into
+  robonet key and mouse events that reach the game.
+- The untouched model's behavior is recorded as the reference for "does not
+  degrade".
+
+**Experiment A-1, reward-free exploration** (2 h sessions, one at a time on
+the single P40; staged, below).
+- **Arms:**
+  - A1 (predictive information under the health floor; λ is the dose);
+  - the ablations A1−act, A1+self and A1−λ;
+  - A2 (empowerment);
+  - A3 (region-to-region MI);
+  - A1+bored.
+- **Baselines:** untouched GameScaling; the fixed energy dose; no energy; a
+  random policy.
+- **Measures (evaluation only):** distance travelled, unique blocks and items
+  seen and obtained, chunks visited, time alive, and how long it takes to
+  get stuck (the compression check above, plus no new statistics for the
+  window).
+- **Measures (internal):** the I_pred estimate, health stats, the dose and λ
+  trajectories, and wall time per step.
+- **The four GameScaling questions:**
+  1. Does training degrade the untouched model's play?
+  2. Does it improve it?
+  3. Can a new init approach it?
+  4. Does whole-model actor training also improve its internal prediction?
+     There is no prediction output to read. The only measure is a probe: a
+     small readout trained on frozen centre-block states to predict the next
+     frame's features, fitted before and after training. It is used for
+     evaluation only and is never trained into the model. The Dreamer/
+     Plan2Explore models stay separate (architecture 2).
+
+**Which arms combine (user, 2026-11-26: ask this after the screen).** The
+arms are not all alternatives. As built (`sili_quartz/actor_objective.py`,
+`examples/gamescaling_trainer.py`) they fall into three groups:
+- *The information term:* A1 (past = state + action), A1−act (state only),
+  A2 (action only), A3 (region A → region B). They can be summed, and two are
+  related exactly by the chain rule:
+  I([s, a]; s′) = I(s; s′) + I(a; s′ | s), i.e. A1 = A1−act + a conditional
+  empowerment term. A2 is the unconditional I(a; s′), so A1 and A2 overlap
+  but are not nested. A3 measures something else (between regions) and adds
+  to any of them.
+- *Add-ons, orthogonal to the term:* +self (a head predicting the agent's own
+  next action), and the two halves of the loss (representation and policy
+  gradient).
+- *The dose rule:* dual λ, fixed, or none, are mutually exclusive with each
+  other. A1−λ is "none". The boredom rule (+bored) adds to the dual rather
+  than replacing it, so dual + bored combine.
+
+So after the screen, survivors from different groups can be combined: for
+example, the best term + self + (dual + bored). A small factorial over the
+add-ons of the surviving terms is cheaper than screening every combination.
+
+**Reasoning probes (evaluation only, user 2026-11-26).** The model plays in
+direct mode, so its action stream has no text. To read what it attends to,
+probes let it think before acting on a game frame (the model card's
+reasoning mode), 4–6 samples at a time because most samples skip thinking:
+- baselines: a separate untouched copy on the P40 reads the frame robonet
+  last sent the AI, once a minute (`examples/reasoning_probe.py`);
+- training arms: the trainer probes the weights being trained every 5
+  minutes (`RUN/probes.jsonl`).
+Scored by `tools/probe_repetition.py`: distinct word 3-grams, the share of
+each thought's 4-grams already said earlier in the run, and the most
+repeated sentences.
+- *Pre-registered reading (user's hypothesis):* thoughts repeat in every
+  arm, since the model is a neocortex without a hippocampus, but they repeat
+  **less** in trained arms than in the untouched model (lower reuse4,
+  higher distinct3), and the recurring sentences change over a training run.
+
+**Staged protocol (user): one P40, so runs go one at a time.**
+1. **Screen.** One 2 h session per arm and baseline. That is 11 sessions,
+   about 22 h. Any arm that shows one of the following is ruled out:
+   - collapse: the compression check trips and does not recover within the
+     session;
+   - a persistent health-floor violation;
+   - NaN or divergence;
+   - the game exits, or containment breaks.
+2. **Repeat.** Rerun the survivors once, and rule out on the same criteria.
+3. **Repeat again.** The same.
+4. **Three seeds.** Train the remaining arms on three seeds while measuring
+   performance with the evaluation-only statistics.
+
+The elimination criteria above are fixed now. The compression thresholds come
+from A-0 (normal play and a random policy). This replaces the general
+"4 seeds per arm" rule for track A: survival is decided per run, and the
+performance claims use the final three seeds.
+
+**Experiment A-2, later:** sili's learned prefrontal regulator (L) setting
+per-region targets, trained on the same objective.
+
+## 2.4a Compute (user, 2026-11-23)
+
+**Hardware:**
+- *Sandbox (Bee):* the P40 (24 GB, fp32 compute, no fast bf16) and the RTX
+  2060. The 2060 drives the display and also runs Minecraft.
+- *ai0:* GPUs on the same LAN.
+
+**Memory estimate for training GameScaling-0.8B on the P40.** These are
+estimates, measured in A-0 before any choice:
+- *Fixed cost (measured weights):* fp32 weights 2.9 GiB (tied embeddings),
+  gradients 2.9 GiB, AdamW state 5.7 GiB. About 11.5 GiB before activations.
+- *Activations:*
+  - One 800 × 600 viewport frame is about 470 vision tokens (patch 16, merge
+    2), and each call also carries a history of frames.
+  - *Measured* ([results](../results/2026-11-23-gamescaling-train-memory.md)):
+    - 8.7 MiB per token for the whole model in training, about 0.36 MiB per
+      token per layer. The earlier "1 MiB per layer" was about 3× too high.
+    - The largest share is the gated delta net (about 377 KiB per token per
+      linear layer), from transformers' pure-PyTorch *chunked* fallback. It
+      also runs in training: the state is kept per 64-token chunk, and the
+      per-token cost is the chunk intermediates.
+    - Next come the fp32 logits kept by the loss (about 1 MiB per token) and
+      the MLPs.
+  - *What fits:*
+    - the fixed fp32 cost is about 11.5 GiB;
+    - 1k tokens of backprop fits, at about 20 GiB;
+    - 2k tokens does not, at about 29 GiB.
+  - *With e-BPTT* (quartz PR #4, per-chunk backward with a carried
+    Jacobian, flat memory in T):
+    - only the current chunk is stored, e.g. the newest frame plus its action
+      tokens: about 500 tokens, about 4.4 GiB;
+    - older context is a detached state with carried credit;
+    - a smaller chunk scales that down linearly.
+    - It is not yet wired into the HF Qwen3.5 layers. That is a build item.
+  - *Other levers:*
+    - gradient checkpointing of the recurrence (recompute the states in
+      backward);
+    - flash-linear-attention's chunk kernel. It is a training kernel too,
+      with its own backward that recomputes the within-chunk intermediates.
+      It should cut the largest share; by how much is not measured. It needs
+      Triton: P40 (sm_61) support is unconfirmed, and the 2060 (sm_75) should
+      work.
+    - Computing the loss in pieces, so the full fp32 logits (about 1 MiB per
+      token) are never all held at once.
+
+**If one P40 is not enough, in this order:**
+1. **The P40 alone,** with e-BPTT chunks (or checkpointing) and split batches.
+2. **Pipeline across the P40 and the 2060 (user).** The 2060 keeps headroom
+   for Minecraft, which uses about 1–2 GB of VRAM.
+3. **Pipeline across Bee and ai0 over the LAN (user).** At a stage boundary
+   the activation is tokens × 1024 × 4 bytes, about 8 MB for 2k tokens, each
+   way. Over gigabit that is about 65 ms per direction per micro-batch.
+
+**Latency is a separate constraint.** The game runs in real time and does not
+pause between calls, unlike GameScaling's own evaluation, which pauses the
+game for each model call.
+- Each call must return within the 200 ms chunk it plans, or the agent falls
+  behind.
+- Pipelining adds memory, not speed. For one live agent it *adds* latency,
+  more so across the LAN.
+- A-0 measures inference latency on the P40. If it is over budget, the
+  levers are a smaller viewport, fewer history frames, or no thinking
+  tokens.
+- Training updates can run asynchronously from acting, on a replay of the
+  last stretch of play.
+
+**Training alongside real-time play (user, 2026-11-26):**
+- Inference stays alone on the 2060 (0.28 s per decision, A.7), so training
+  never slows play. Training runs asynchronously on replays of recent play:
+  the P40 first, AI0's GTX 1080 and 1660 SUPER if more is needed.
+- **Train LoRA adapters continually and merge them into the weights**, so
+  training changes the model itself (ReLoRA-style); the adapter is only a
+  cheap way to compute and ship each update (user):
+  - a sync sends the adapters (a few MB), so any GPU on either machine can
+    train (a full fp16 copy is 1.6 GB: under a second over PCIe on Bee, ~13 s
+    over the LAN);
+  - on the 2060 each sync is an in-place `W += B·A` per adapted matrix,
+    amortized over a few layers per decision so play never blips. The
+    CUDA-graph decoder reads the weights in place, so no graph is
+    recaptured;
+  - the trainer merges the same update into its own copy, resets the adapter
+    (B = 0) and keeps training, so both copies stay identical;
+  - merged updates cannot be dropped, so the untouched model is kept on disk
+    for the "does not degrade" comparison with A-0.
+- Weight diffs are the fallback for anything LoRA cannot express (e.g. norms,
+  energy's own parameters): sent as sparse top-k diffs, since a dense diff is
+  as large as the weights.
+
+## 2.5 Step-by-step order
+
+**Owners:** *me* means Claude, running on the sandbox. *user* means a step only
+the user can do (account, internet window, review).
+
+**Two lanes:**
+- Track P (steps P.1–P.7) and the Minecraft setup (A.1–A.8) do not depend on
+  each other, so they run side by side.
+- Training in track A (A.9 onward) needs A.8.
+
+**Durations** are estimates from the 2c timings. Each results step writes a
+`docs/results/` file and links it from this PR.
+
+### Track P: text prediction
+
+| Step | Owner | What | Done when |
+|---|---|---|---|
+| P.1 | me | **Effect meter**: KL(p_energy ‖ p_clean) on a sampled subset of steps, with a clean pass sharing the same cache | **done** (`sili_quartz/controllers.py`, `NeuronEnergy.disabled()`/`set_dose()`): KL is 0 with energy off, rises with cost, clean-pass time logged |
+| P.2 | me | **Surprise meter** (running −log p of own output) and **learning-progress meter** (short- and long-window drop in loss) | **done**: progress is in noise units (noise from first differences, so a trend is not noise) |
+| P.3 | me | **Controllers**: P1, P1a, P1b, P2, P2a, P2+A, and the ×R/D variants, each a small class that reads the meters and sets energy's cost, noise and drive | **done**: two-sided, bounded, NaN-safe; P2 lowers δ while the loss falls and re-melts on a floor. Engagement's short-term utility is taken *relative to the long-term trend* (read literally, steady progress would read as disengaged), and the neutral engagement is its value at 2 noise units of long-term progress (≈0.44), so a loss floor (0.25) re-melts |
+| P.4 | me | **Mirostat baseline** (P0b), from the paper's algorithm 1 | test: observed surprise tracks τ on GameScaling's text head |
+| P.5 | me | **Loop-test harness**: promote `loop_vs_temperature.py` into `examples/` with all P-1 arms | **done** (`examples/loop_test.py`): smoke run on the P40; δ₀ = P0c's own effect KL (1.82 nats/token), τ = the model's surprise on train text (3.92 nats); 0.9 s/token with energy on |
+| P.6 | me | **Run P-1** (about 2–4 h; one run per arm) | **done** (885 s): [results](../results/2026-11-26-p1-loop-test.md) |
+| P.7 | me | **Collapse loop**: wire the controllers into `model_collapse.py`; add free-running samples *during* each generation's training; then run P-2 (5 arms × 4 seeds × 10 generations, about 15–20 h) | 1-generation smoke, then the results doc |
+
+### Track A: Minecraft setup
+
+| Step | Owner | What | Done when |
+|---|---|---|---|
+| A.1 | user | Find the Minecraft version the no-quit mod supports | **done**: 1.20.1, Forge |
+| A.2 | user | **Internet window on the sandbox**: Prism Launcher, sign in, Forge 1.20.1, the no-quit mod and helper mods; create the world | **done** (2026-11-25); the window stays open for relaunches |
+| A.2b | me | **Session control**: `tools/minecraft.py` (status, stop, seed reset, fullscreen launch into the world) | **done**: stop → reset → launch reached the world in 52.6 s with a new player at spawn |
+| A.3 | me | **Offline check**: the game starts and loads the world with the network off | a launch with no network (if Prism needs the network to launch, the window stays open and this is recorded instead) |
+| A.4 | me | **robonet on localhost**: endpoint, headless brain with monitor, AI bridge | **done** (robot_network PR #5): a bridge client walked, jumped and turned the camera; 640×480 frames at 30 fps and non-silent audio arrived; 8 robonet bugs fixed on the way |
+| A.5 | me | **Containment**: blocked combos at the endpoint, kill switch; a watchdog that relaunches into the world if the game exits | blocklist, kill switch and watchdog **done** (F11 refused live; hotkey and `--now` stopped robonet; `tools/minecraft.py watch` relaunched a killed game into the world in 50.7 s) |
+| A.6 | me | **Evaluation telemetry**: read the world's per-player statistics file on a timer (evaluation only; never reaches the agent) | `tools/minecraft.py stats` **done** (distance, jumps, play time, mined/crafted/used/picked up/killed, deaths); the game writes the file on autosave (~5 min); chunks visited still missing (A.6b) |
+| A.7 | me | **GameScaling as an actor**: load the full `Qwen3_5ForConditionalGeneration` (vision); prompt template and action parser from the model card; map the action text to robonet events | **done**: plays through robonet; **0.28 s per decision** live on the 2060 (fp16), down from 4.3 s ([results](../results/2026-11-26-gamescaling-actor-smoke.md)): new frame only with a sliding KV window, CUDA-graph decode, 640×360 frames, pipelined execution |
+| A.8 | me | **A-0 baselines**: one 2 h session of untouched GameScaling, one of a random policy | the reference statistics and the compression thresholds (stuck and noise ends) recorded |
+
+### Track A: training and runs
+
+| Step | Owner | What | Done when |
+|---|---|---|---|
+| A.9 | me | **Training infrastructure**: e-BPTT chunks (or checkpointing) through the Qwen3.5 linear-attention layers; asynchronous updates on a replay of recent play; chunked loss; pipeline only if needed (2.4a) | one update fits in memory without stalling the game loop; health stats logged |
+| A.10 | me | **Objective parts**: gaussian_bc and InfoNCE on `layers[12]` projected to d ≤ 64 and on the action stream; the health floor; the dual update for λ | unit tests; the estimate rises on a scripted varied-but-predictable stream and falls on a looped one and on noise |
+| A.11 | me | **Arms**: A1, A1−act, A1+self, A1−λ, A2, A3 and A1+bored, plus the baselines (untouched, fixed dose, no energy, random) | a 10-minute smoke run of each |
+| A.12 | me | **Staged runs**: screen (11 × 2 h, about 22 h), repeat the survivors, repeat again, then 3 seeds of what is left | a results doc for each stage |
+| A.13 | me | **Part 3** (results) collects the result docs; **part 4** (conclusion) | written for review |
+| A-2 | later | sili's learned prefrontal regulator (L) on top of the surviving arms | after A.13 |
+
+## 2.6 Still open
+
+- The compression-ratio thresholds (A.8), from A-0's normal play and from a
+  random policy.
+- Audio for the GameScaling arms: dropped, or a spectrogram image (A.7).
+- Whether Prism can launch with the network off (A.3).
+- Whether training fits on the P40 alone (A.9), and the inference latency
+  (A.7).

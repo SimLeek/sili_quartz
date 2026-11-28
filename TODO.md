@@ -150,6 +150,14 @@ The generational pilot (`examples/model_collapse.py`) comes before the dialogue.
    program run N times. Results to `docs/results/`, ledger row.
 
 ## 2d. Minimal energy controller (before sleep, user 2026-11-22)
+Write-up in paper order: [docs/energy-controller/](docs/energy-controller/README.md).
+Track A environment (2026-11-25): Minecraft 1.20.1 + Forge on the sandbox
+(Prism Launcher), driven through robonet on localhost (robot_network PR #5:
+bridge actions, headless monitor, key blocklist, kill switch);
+`tools/minecraft.py` stops, seed-resets and relaunches the world. Steps
+A.1, A.2, A.2b, A.4 done; A.5 needs the relaunch watchdog. See
+[2-methodology.md](docs/energy-controller/2-methodology.md) section 2.5.
+Part 1, introduction and related work, is a first pass (2026-11-23).
 A fixed energy dose is wrong most of the time: raise it to try new things and
 to learn new things, lower it to focus and get accurate output. Build the
 smallest controller that sets the dose, working before 3 and 4.
@@ -195,6 +203,84 @@ smallest controller that sets the dose, working before 3 and 4.
   per-neuron homeostatic energy; the Energy-Based Reasoners paper means a
   learned scalar over reasoning states, minimized by looping. That scalar may
   still be a useful signal for the controller (converged → focus).
+
+- **Track A: tether the state to its input (user, 2026-11-27).** Hypothesis:
+  something has to keep the model tied to its input (the world), as cortical
+  columns do. GameScaling's own training had no prediction loss: behaviour
+  cloning on assistant tokens, all weights trained (arXiv 2610.28698 §3).
+  Its tie to the world was the label stream: human actions, or VPT-style
+  inverse-dynamics labels that saw later frames (which subsets it used is not
+  stated), plus ~6 % post-hoc rationales written with the action visible.
+  RL drops that tie. Cloning coherent play means the weights carry an
+  implicit world model (actions with high MI with the game); our objectives
+  (MI between internal projections, entropy floor, energy) do not require
+  that coherence, so nothing defends it. Variants, as arms:
+  - Not an arm: KL to a frozen copy of the untouched policy. That is the
+    behaviour-cloning target itself, an oracle (user, 2026-11-27).
+  - `--tether head`: the centre state after acting on frame t predicts frame
+    t+1's mean image-token input (detached) through a linear readout;
+    representation loss only, never a reward, so pausing is not paid for.
+  - `--tether col`: neural columns, no readout: the state's neurons in
+    columns of 8, each column's average matches one value of the input
+    (reduced from 1024 to 128 values by a fixed random orthogonal projection,
+    since the state is no wider than the input here). A column of one neuron
+    would only copy the input (user).
+  - `--tether chunks` (user): columns across depth, no extra width. Layers in
+    chunks of 4; per dimension, the average of a chunk's layer outputs after
+    acting must match the chunk's input at the next frame, so each layer can
+    correct the average and the signal is re-anchored every 4 layers instead
+    of having to survive the whole depth (72+ layers in larger models).
+  - Output side (user): the output neurons decide the output, as the input is
+    the input; the last chunk's layers average to it (`--tether-out`: at each
+    emitted action token, the last 4 layers' average matches that token's
+    embedding, the head being tied). Later variant: the whole depth average
+    *is* the output. It replaces the pretrained readout, so it needs a gradual
+    hand-over from the final layer, not a switch.
+  - Removed (user, 2026-11-27): the action-entropy guard. The right entropy
+    depends on the moment (low while chopping wood, high for quick actions),
+    and the penalty trained the output to be random, mostly in the mouse
+    digits. Energy keeps neurons in a useful band; the averaging keeps a few
+    forced or exhausted neurons from changing what the model does.
+  - Full setup (user): chunk tether + energy on MLP/attention/input/output
+    with the dual dose + PR guard + input-share band
+    (`--health pr+in`: below its floor the dose is scaled down, so energy's
+    waking "dreaming" cannot drown out the input) + amortized row-norm band
+    (`--renorm`) + Adam reset at merges. The freeze-gated sleep phase is TODO 3.
+  - Energy self-maintenance instead of a loss: energy on input-driven state
+    holding its setpoint has to anticipate the input. The energy-only arm
+    (Eio_fixed1g) tests this; scored by the probe below.
+  - Later: columns on the Gated DeltaNet recurrent state (16 heads x 128 x 128
+    per layer, much wider than the input): column means of the state match
+    the input. Needs the state at each turn boundary, which the fused kernel
+    does not return.
+  - Short trained thoughts (user, 2026-11-27): a goal of 5-8 tokens
+    ("I must get wood." -> "have wood, crafting table") carried in context and
+    trained with the RL policy. That costs ~50-100 ms per decision, not the
+    1-2 s of the base model's 50-200-token rationales, and gives the policy a
+    persistent intent. **The thought length is a knob to test** (user: 5-8
+    tokens, "maybe a few more"): sweep it, e.g. 8 / 16 / 32 tokens, and report
+    worst-case regret across the range rather than one tuned value.
+    First: `tools/thought_influence.py` measures whether the
+    base model's thoughts change its actions at all.
+  - Keeping the output repertoire under RL (user, 2026-11-27; A2c collapsed to
+    one key): Clip-Cov / KL-Cov built (`--cov`). Next ideas, all knowing the
+    action tokens:
+    - energy on tokens as virtual neurons: each action token has an energy
+      state, with feedback when it is used too much or too little. Needs a
+      per-token set point (the site-mean set point silences above-mean units at
+      equilibrium);
+    - sleep-phase fan-in consolidation: for each output token, trace and
+      strengthen the path that can trigger it back through the network
+      (possibly a computed fan-in), then make it coherent with the rest of the
+      model during sleep, so every token stays reachable. The fan-ins must be
+      **exclusive** (user): strengthening one token's path must not raise the
+      others, so tokens stay mutually exclusive. Measure how much each token's
+      fan-in overlaps the other tokens' (and the shared non-token neurons'),
+      and consolidate the exclusive part. Related: lateral inhibition, and the
+      channel-orthogonality penalty from sili_peridot's rank control.
+  - Every arm is scored by `tools/world_model_probe.py`: ridge from the
+    trained state to the untouched model's next-frame input on one fixed
+    reference replay, against copy and current-frame baselines.
 
 ## 3. Stochastic annealing + health pass: "sleep"
 - **Sleep window (≤ 8 h/day, once a day) = annealing + health passes that

@@ -13,6 +13,7 @@ multiplied back, which makes one cost mean the same dose at every site.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import torch
@@ -73,6 +74,9 @@ class NeuronEnergy:
         decay_div: float = 4,
     ):
         self.cost, self.seed, self.train, self.decay_div = cost, seed, train, decay_div
+        self.sites = sites
+        # Dose multipliers a controller moves at run time (see set_dose).
+        self.cost_scale = self.noise_scale = self.drive_scale = 1.0
         self.enabled = True
         self.part = 0
         self.aux: list[Tensor] = []
@@ -83,17 +87,46 @@ class NeuronEnergy:
             site.module.register_forward_hook(self._hook(i, site)) for i, site in enumerate(sites)
         ]
 
+    def _dose(self, site: EnergySite) -> tuple[float, float, float, float]:
+        """(cost, drive, exploration, decay) for a site at the current scales.
+        At drive_scale 1 the drive is neutral on average (cost * mean)."""
+        base = self.cost if site.cost is None else site.cost
+        cost = base * self.cost_scale
+        drive = cost * site.mean * self.drive_scale
+        exploration = min(0.001, base * site.mean / 4) * self.noise_scale
+        decay = drive / self.decay_div if self.decay_div else 0.0
+        return cost, drive, exploration, decay
+
+    def set_dose(self, cost_scale: float = 1.0, noise_scale: float = 1.0, drive_scale: float = 1.0) -> None:
+        """Rescale every site's cost, noise (exploration) and drive, live
+        states included. 1, 1, 1 is the dose the sites were built with."""
+        self.cost_scale, self.noise_scale, self.drive_scale = cost_scale, noise_scale, drive_scale
+        for site, states in zip(self.sites, self.states):
+            cost, drive, exploration, decay = self._dose(site)
+            for ed in states:
+                if ed is not None:
+                    ed.activation_cost, ed.drive, ed.exploration, ed.decay = cost, drive, exploration, decay
+
+    @contextmanager
+    def disabled(self):
+        """Run without energy (and without touching its state), e.g. for the
+        clean pass of the effect meter."""
+        was, self.enabled = self.enabled, False
+        try:
+            yield
+        finally:
+            self.enabled = was
+
     def _new_state(self, index: int, site: EnergySite, h: Tensor) -> EnergyDynamics:
-        cost = self.cost if site.cost is None else site.cost
-        drive = cost * site.mean  # neutral on average
+        cost, drive, exploration, decay = self._dose(site)
         ed = EnergyDynamics(
             drive,
             cost,
             precision=0.04,
             density=0.5,
             p=1.0,  # pretrained and dense: energy only fires and shuts off
-            exploration=min(0.001, drive / 4),
-            decay=drive / self.decay_div if self.decay_div else 0.0,
+            exploration=exploration,
+            decay=decay,
             fire_reset_to_zero=True,
             rng=torch.Generator(h.device).manual_seed(self.seed + 1000 * self.part + index),
         )
